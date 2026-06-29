@@ -1,0 +1,11 @@
+[package]
+name = "rs485host"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serialport = { version = "4", default-features = false }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+protocol = { path = "../protocol" }

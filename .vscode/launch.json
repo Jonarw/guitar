@@ -1,0 +1,28 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+                {
+            "type": "probe-rs-debug",
+            "request": "launch",
+            "name": "Debug pluck",
+            "speed": 5000,
+            "chip": "RP2040",
+            "cwd": "${workspaceFolder}/pluck",
+            "flashingConfig": {
+                "flashingEnabled": true,
+                "haltAfterReset": true,
+            },
+            "preLaunchTask": "build pluck",
+            "coreConfigs": [
+                {
+                    "programBinary": "target/thumbv6m-none-eabi/debug/main",
+                    "rttEnabled": true
+                }
+            ],
+            "env": {
+                "RUST_LOG": "info"
+            },
+            "consoleLogLevel": "Debug"
+        }
+    ]
+}

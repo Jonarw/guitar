@@ -1,0 +1,65 @@
+[package]
+edition = "2024"
+name = "guitar-motor"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+publish = false
+
+[dependencies]
+embassy-embedded-hal = { version = "0.6", features = ["defmt"] }
+embassy-sync = { version = "0.8", features = ["defmt"] }
+embassy-executor = { version = "0.10", features = [
+  "platform-cortex-m",
+  "executor-thread",
+  "executor-interrupt",
+  "defmt",
+] }
+embassy-time = { version = "0.5", features = [
+  "defmt",
+  "defmt-timestamp-uptime",
+] }
+embassy-rp = { version = "0.10", features = [
+  "defmt",
+  "unstable-pac",
+  "time-driver",
+  "critical-section-impl",
+  "rp2040",
+] }
+
+defmt = "1.1.0"
+defmt-rtt = "1.0.0"
+
+cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+cortex-m-rt = "0.7"
+critical-section = "1.1"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+embedded-hal = "1.0"
+embedded-hal-async = "1.0"
+embedded-io-async = { version = "0.7.0", features = ["defmt"] }
+static_cell = "2.1"
+portable-atomic = { version = "1.5", features = ["critical-section"] }
+fixed = "1"
+stepgen = "0.1"
+cobs = { version = "0.5", features = ["defmt"], default-features = false }
+num_enum = { version = "0.7", default-features = false }
+protocol = { path = "../protocol" }
+
+
+[profile.release]
+debug = 2
+lto = 'fat'
+opt-level = 's'
+codegen-units = 1
+incremental = false
+
+[profile.dev]
+debug = 2
+lto = 'fat'
+opt-level = "s"
+codegen-units = 1
+incremental = false
+
+[package.metadata.embassy]
+build = [{ target = "thumbv6m-none-eabi", artifact-dir = "out/examples/rp" }]

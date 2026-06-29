@@ -1,0 +1,16 @@
+{
+    "editor.formatOnSave": true,
+    "rust-analyzer.testExplorer": true,
+    "cortex-debug.gdbPath": "rust-gdb",
+    "terminal.integrated.scrollback": 50000,
+    "rust-analyzer.check.allTargets": false,
+    "rust-analyzer.check.extraArgs": [
+        "--bins"
+    ],
+    "rust-analyzer.linkedProjects": [
+        "pluck/Cargo.toml",
+        "protocol/Cargo.toml",
+        "rs485host/Cargo.toml"
+    ],
+    "rust-analyzer.check.command": "clippy"
+}
