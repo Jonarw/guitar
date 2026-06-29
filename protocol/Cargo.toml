@@ -1,0 +1,9 @@
+[package]
+name = "protocol"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cobs = { version = "0.5", default-features = false, features = ["defmt"] }
+defmt = "1.0"
+num_enum = { version = "0.7", default-features = false }
