@@ -1,0 +1,7 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "probe-rs run --chip STM32G030F6"
+[build]
+target = "thumbv6m-none-eabi"
+
+[env]
+DEFMT_LOG = "info"

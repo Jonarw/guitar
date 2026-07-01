@@ -12,7 +12,24 @@
             "options": {
                 "cwd": "pluck"
             },
-            "problemMatcher": ["$rustc"],
+            "problemMatcher": [
+                "$rustc"
+            ],
+        },
+        {
+            "label": "build fret",
+            "type": "shell",
+            "command": "cargo build",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "options": {
+                "cwd": "fret"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
         }
     ]
 }

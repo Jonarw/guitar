@@ -1,7 +1,7 @@
 {
     "version": "0.2.0",
     "configurations": [
-                {
+        {
             "type": "probe-rs-debug",
             "request": "launch",
             "name": "Debug pluck",
@@ -16,6 +16,30 @@
             "coreConfigs": [
                 {
                     "programBinary": "target/thumbv6m-none-eabi/debug/main",
+                    "rttEnabled": true
+                }
+            ],
+            "env": {
+                "RUST_LOG": "info"
+            },
+            "consoleLogLevel": "Debug"
+        },
+        {
+            "type": "probe-rs-debug",
+            "request": "launch",
+            "name": "Debug fret",
+            "speed": 24000,
+            "chip": "STM32G030F6",
+            "cwd": "${workspaceFolder}/fret",
+            "flashingConfig": {
+                "flashingEnabled": true,
+                "haltAfterReset": true,
+            },
+            "preLaunchTask": "build fret",
+            "coreConfigs": [
+                {
+                    "programBinary": "target/thumbv6m-none-eabi/debug/guitar-fret",
+                    "svdFile": "stm32g030.svd",
                     "rttEnabled": true
                 }
             ],

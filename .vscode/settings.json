@@ -10,7 +10,8 @@
     "rust-analyzer.linkedProjects": [
         "pluck/Cargo.toml",
         "protocol/Cargo.toml",
-        "rs485host/Cargo.toml"
+        "rs485host/Cargo.toml",
+        "fret/Cargo.toml"
     ],
     "rust-analyzer.check.command": "clippy"
 }

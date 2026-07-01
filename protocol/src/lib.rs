@@ -37,10 +37,14 @@ pub enum MessageAction {
     Presence,
     ConfirmPresence,
     Pluck,
-    Fret,
-    Dampen,
+    PluckVolume,
+    PluckEnable,
+    PluckDisable,
+    FretFast,
+    FretQuiet,
     Unfret,
-    Volume,
+    Dampen,
+    FretCalibration,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, TryFromPrimitive, IntoPrimitive)]
@@ -51,6 +55,7 @@ pub enum GuitarString {
     D,
     G,
     B,
+    #[allow(non_camel_case_types)]
     e,
 }
 
@@ -120,7 +125,7 @@ impl MessageFrame {
         raw_bytes[0] = self.action.into();
         raw_bytes[1] = self.string.into();
         raw_bytes[2] = match self.action {
-            MessageAction::Volume => self.pluck_volume.volume,
+            MessageAction::PluckVolume => self.pluck_volume.volume,
             _ => self.fret.into(),
         };
 
@@ -151,7 +156,7 @@ impl MessageFrame {
         let string = bytes[1].try_into().map_err(|_| DecodeError::InvalidString)?;
 
         let (fret, pluck_volume) = match action {
-            MessageAction::Volume => (Fret::NoFret, bytes[2].into()),
+            MessageAction::PluckVolume => (Fret::NoFret, bytes[2].into()),
             _ => (bytes[2].try_into().map_err(|_| DecodeError::InvalidFret)?, 0.into()),
         };
 

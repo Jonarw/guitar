@@ -8,8 +8,9 @@ use embassy_rp::{
     },
     peripherals::{DMA_CH0, DMA_CH1, UART1},
     pwm::{self, Pwm, PwmOutput},
-    uart::{self, BufferedUart, Uart},
+    uart::{self, Uart},
 };
+
 use fixed::traits::ToFixed;
 
 bind_interrupts!(pub struct Irqs {
@@ -18,13 +19,11 @@ bind_interrupts!(pub struct Irqs {
 });
 
 pub const SYS_CLOCK: u32 = 125_000_000;
-pub const PWM_DIVIDER: u32 = 8;
+pub const PWM_DIVIDER: u32 = 16;
 pub const PWM_CLOCK: u32 = SYS_CLOCK / PWM_DIVIDER;
 
 pub struct Hw {
-    pub channel_1: Channel,
-    pub channel_2: Channel,
-    pub channel_3: Channel,
+    pub channels: [Channel; 3],
     pub stepper_ms1: Output<'static>,
     pub stepper_ms2: Output<'static>,
     pub rs485: Rs485,
@@ -74,7 +73,7 @@ pub fn init() -> Hw {
     let pwm_0 = Pwm::new_output_ab(p.PWM_SLICE0, p.PIN_16, p.PIN_17, config).split();
 
     let mut config = pwm::Config::default();
-    config.divider = 8i32.to_fixed();
+    config.divider = PWM_DIVIDER.to_fixed();
     config.top = 65535;
     let pwm_1 = Pwm::new_output_a(p.PWM_SLICE1, p.PIN_18, config).split();
 
@@ -116,7 +115,7 @@ pub fn init() -> Hw {
         let servo_pwm = pwm_0.1.unwrap();
         let volume_pwm = VolumePwm {
             servo_pwm,
-            reversed: false,
+            reversed: true,
         };
 
         Channel { stepper, volume_pwm }
@@ -138,20 +137,20 @@ pub fn init() -> Hw {
         let servo_pwm = pwm_0.0.unwrap();
         let volume_pwm = VolumePwm {
             servo_pwm,
-            reversed: false,
+            reversed: true,
         };
 
         Channel { stepper, volume_pwm }
     };
 
-    // MS1=high, MS2=high -> 16 microsteps
-    let stepper_ms1 = Output::new(p.PIN_1, High);
-    let stepper_ms2 = Output::new(p.PIN_0, High);
+    let channels = [channel_1, channel_2, channel_3];
+
+    // MS1=low, MS2=low -> 8 microsteps
+    let stepper_ms1 = Output::new(p.PIN_1, Low);
+    let stepper_ms2 = Output::new(p.PIN_0, Low);
 
     Hw {
-        channel_1,
-        channel_2,
-        channel_3,
+        channels,
         stepper_ms1,
         stepper_ms2,
         rs485,

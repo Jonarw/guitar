@@ -13,7 +13,11 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let args = Args {
+        port: "/dev/ttyUSB0".to_string(),
+        baud_rate: 115200,
+    };
+    // let args = Args::parse();
 
     let mut port = serialport::new(&args.port, args.baud_rate)
         .timeout(Duration::from_millis(100))
@@ -21,7 +25,7 @@ fn main() -> anyhow::Result<()> {
         .expect("Failed to open serial port");
 
     println!("Connected to {}.", args.port);
-    println!("Available commands: F[S][N], P[S], D[S][N], R[S][N], V[S][u8]");
+    println!("Available commands: F[S][N], P[S], D[S][N], R[S][N], V[S][u8], E[S], I[S]");
 
     loop {
         print!("> ");
@@ -60,13 +64,44 @@ fn parse_command(line: &str) -> Result<MessageFrame, String> {
     let rest = chars.as_str();
 
     match command {
-        'F' | 'f' => {
+        'F' => {
             let (string, fret) = parse_string_and_fret(rest)?;
-            Ok(MessageFrame::new(MessageAction::Fret, string, fret, 0.into()))
+            Ok(MessageFrame::new(MessageAction::FretFast, string, fret, 0.into()))
+        }
+        'f' => {
+            let (string, fret) = parse_string_and_fret(rest)?;
+            Ok(MessageFrame::new(MessageAction::FretQuiet, string, fret, 0.into()))
+        }
+        'C' | 'c' => {
+            let (string, fret) = parse_string_and_fret(rest)?;
+            Ok(MessageFrame::new(
+                MessageAction::FretCalibration,
+                string,
+                fret,
+                0.into(),
+            ))
         }
         'P' | 'p' => {
             let string = parse_string_only(rest)?;
             Ok(MessageFrame::new(MessageAction::Pluck, string, Fret::NoFret, 0.into()))
+        }
+        'E' | 'e' => {
+            let string = parse_string_only(rest)?;
+            Ok(MessageFrame::new(
+                MessageAction::PluckEnable,
+                string,
+                Fret::NoFret,
+                0.into(),
+            ))
+        }
+        'I' | 'i' => {
+            let string = parse_string_only(rest)?;
+            Ok(MessageFrame::new(
+                MessageAction::PluckDisable,
+                string,
+                Fret::NoFret,
+                0.into(),
+            ))
         }
         'D' | 'd' => {
             let (string, fret) = parse_string_and_fret(rest)?;
@@ -79,13 +114,13 @@ fn parse_command(line: &str) -> Result<MessageFrame, String> {
         'V' | 'v' => {
             let (string, volume) = parse_string_and_volume(rest)?;
             Ok(MessageFrame::new(
-                MessageAction::Volume,
+                MessageAction::PluckVolume,
                 string,
                 Fret::NoFret,
                 volume.into(),
             ))
         }
-        _ => Err(format!("unknown command '{}'; expected F, P, D, R, or V", command)),
+        _ => Err(format!("unknown command '{}'; expected F, P, D, R, C or V", command)),
     }
 }
 
