@@ -1,16 +1,122 @@
 #![no_std]
 
-use num_enum::{IntoPrimitive, TryFromPrimitive};
+use serde::{Deserialize, Serialize};
 
-#[derive(defmt::Format)]
-pub struct MessageFrame {
-    pub action: MessageAction,
-    pub string: GuitarString,
-    pub fret: Fret,
-    pub pluck_volume: PluckVolume,
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
+pub enum Message {
+    FretPresence(Fret),
+    PluckPresence(GuitarString),
+    ConfirmPresence,
+    Pluck(GuitarString),
+    PluckVolume(GuitarString, PluckVolume),
+    PluckEnable(GuitarString),
+    PluckDisable(GuitarString),
+    FretFast(GuitarString, Fret),
+    FretQuiet(GuitarString, Fret),
+    FretAdaptive(GuitarString, Fret),
+    Unfret(GuitarString, Fret),
+    Dampen(GuitarString, Fret),
+    FretCalibration(GuitarString, Fret),
+    Config(Fret, ConfigValue),
+    Reset,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
+impl Message {
+    pub fn get_fret(&self) -> Option<Fret> {
+        match self {
+            Message::FretPresence(fret)
+            | Message::FretFast(_, fret)
+            | Message::FretQuiet(_, fret)
+            | Message::Unfret(_, fret)
+            | Message::Dampen(_, fret)
+            | Message::FretAdaptive(_, fret)
+            | Message::FretCalibration(_, fret)
+            | Message::Config(fret, _) => Some(*fret),
+            _ => None,
+        }
+    }
+
+    pub fn get_string(&self) -> Option<GuitarString> {
+        match self {
+            Message::Pluck(guitar_string)
+            | Message::PluckPresence(guitar_string)
+            | Message::PluckVolume(guitar_string, _)
+            | Message::PluckEnable(guitar_string)
+            | Message::PluckDisable(guitar_string)
+            | Message::FretFast(guitar_string, _)
+            | Message::FretQuiet(guitar_string, _)
+            | Message::FretAdaptive(guitar_string, _)
+            | Message::Unfret(guitar_string, _)
+            | Message::Dampen(guitar_string, _)
+            | Message::FretCalibration(guitar_string, _) => Some(*guitar_string),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
+pub struct Percentage {
+    value: u8,
+}
+
+impl From<u8> for Percentage {
+    fn from(value: u8) -> Self {
+        Percentage::new(value)
+    }
+}
+
+impl From<Percentage> for u8 {
+    fn from(value: Percentage) -> Self {
+        value.get_value()
+    }
+}
+
+impl Percentage {
+    pub const fn new(value: u8) -> Self {
+        assert!(value <= 100);
+        Self { value }
+    }
+
+    pub fn get_value(&self) -> u8 {
+        self.value
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
+pub struct Duration {
+    value_ms: u16,
+}
+
+impl Duration {
+    pub const fn new(value_ms: u16) -> Self {
+        Self { value_ms }
+    }
+
+    pub fn get_value_ms(&self) -> u16 {
+        self.value_ms
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
+pub enum ConfigValue {
+    MaxForce(Percentage),
+    HoldForce(Percentage),
+    DampenForce(Percentage),
+    MarginalForce(Percentage),
+    ReleaseDuration(Duration),
+    DampenToFretRampDuration(Duration),
+    FretFastMaxForceDuration(Duration),
+    FretQuietPhase1Duration(Duration),
+    FretQuietPhase2Duration(Duration),
+    FretAdaptivePhase1Duration(Duration),
+    FretAdaptivePhase2Duration(Duration),
+    FretAdaptivePhase3Durtaion(Duration),
+    FretAdaptivePhase1Force(Percentage),
+    FretAdaptivePhase2Force(Percentage),
+    FretAdaptivePhase3Force(Percentage),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
 pub struct PluckVolume {
     volume: u8,
 }
@@ -31,23 +137,7 @@ impl From<u8> for PluckVolume {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, TryFromPrimitive, IntoPrimitive)]
-#[repr(u8)]
-pub enum MessageAction {
-    Presence,
-    ConfirmPresence,
-    Pluck,
-    PluckVolume,
-    PluckEnable,
-    PluckDisable,
-    FretFast,
-    FretQuiet,
-    Unfret,
-    Dampen,
-    FretCalibration,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, TryFromPrimitive, IntoPrimitive)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum GuitarString {
     E,
@@ -59,7 +149,7 @@ pub enum GuitarString {
     e,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, TryFromPrimitive, IntoPrimitive)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Fret {
     NoFret,
@@ -83,109 +173,25 @@ pub enum Fret {
     Fret18,
 }
 
-#[derive(defmt::Format, Debug)]
-pub enum DecodeError {
-    CobsError(cobs::DecodeError),
-    WrongFrameSize(usize),
-    InvalidAction,
-    InvalidString,
-    InvalidFret,
-    ChecksumError(u8, u8),
-}
-
-impl MessageFrame {
-    pub const ENCODED_BYTE_SIZE: usize = 4;
-    pub const COBS_BYTE_SIZE: usize = Self::ENCODED_BYTE_SIZE + 2; // 1 stuffing byte, 1 sentinel byte
-    pub const SENTINEL_BYTE: u8 = 0xFF;
-
-    fn get_checksum(&self) -> u8 {
-        self.pluck_volume
-            .volume
-            .wrapping_add(self.action.into())
-            .wrapping_add(self.string.into())
-            .wrapping_add(self.fret.into())
-    }
-
-    pub fn new(action: MessageAction, string: GuitarString, fret: Fret, pluck_volume: PluckVolume) -> MessageFrame {
-        Self {
-            action,
-            string,
-            fret,
-            pluck_volume,
-        }
-    }
-
-    pub fn verify_checksum(&self, checksum: u8) -> bool {
-        checksum == self.get_checksum()
-    }
-
-    pub fn encode(&self) -> [u8; Self::ENCODED_BYTE_SIZE] {
-        let mut raw_bytes = [0; Self::ENCODED_BYTE_SIZE];
-
-        raw_bytes[0] = self.action.into();
-        raw_bytes[1] = self.string.into();
-        raw_bytes[2] = match self.action {
-            MessageAction::PluckVolume => self.pluck_volume.volume,
-            _ => self.fret.into(),
-        };
-
-        raw_bytes[3] = self.get_checksum();
-        raw_bytes
-    }
-
-    pub fn cobs_encode(&self) -> [u8; Self::COBS_BYTE_SIZE] {
-        let raw = self.encode();
-        let mut ret = [0xFF; _];
-        cobs::encode_with_sentinel(&raw, &mut ret, Self::SENTINEL_BYTE);
-        ret
-    }
-
-    pub fn cobs_decode(mut bytes: [u8; Self::COBS_BYTE_SIZE]) -> Result<Self, DecodeError> {
-        let decoded_bytes =
-            cobs::decode_in_place_with_sentinel(&mut bytes, 0xFF).map_err(|e| DecodeError::CobsError(e))?;
-
-        if decoded_bytes != Self::ENCODED_BYTE_SIZE {
-            return Err(DecodeError::WrongFrameSize(decoded_bytes));
-        }
-
-        Self::decode(bytes[0..Self::ENCODED_BYTE_SIZE].try_into().unwrap())
-    }
-
-    pub fn decode(bytes: [u8; Self::ENCODED_BYTE_SIZE]) -> Result<Self, DecodeError> {
-        let action = bytes[0].try_into().map_err(|_| DecodeError::InvalidAction)?;
-        let string = bytes[1].try_into().map_err(|_| DecodeError::InvalidString)?;
-
-        let (fret, pluck_volume) = match action {
-            MessageAction::PluckVolume => (Fret::NoFret, bytes[2].into()),
-            _ => (bytes[2].try_into().map_err(|_| DecodeError::InvalidFret)?, 0.into()),
-        };
-
-        let ret = Self {
-            action,
-            string,
-            fret,
-            pluck_volume,
-        };
-
-        let checksum = ret.get_checksum();
-        if checksum != bytes[3] {
-            return Err(DecodeError::ChecksumError(checksum, bytes[3]));
-        }
-
-        Ok(ret)
-    }
-}
+pub const MAX_FRAME_SIZE: usize = 8;
+const SENTINEL_BYTE: u8 = 0x00;
 
 pub struct Parser {
-    message_buffer: [u8; MessageFrame::COBS_BYTE_SIZE],
+    message_buffer: [u8; MAX_FRAME_SIZE],
     received_bytes: usize,
 }
 
 #[derive(defmt::Format, Debug)]
 pub enum ParserError {
-    FrameTooShort(usize),
+    EmptyFrame,
     FrameTooLong,
-    DeocdeError(DecodeError),
+    DecodeError(postcard::Error, [u8; MAX_FRAME_SIZE], usize),
+}
+
+impl Message {
+    pub fn encode<'a>(&self, buffer: &'a mut [u8]) -> postcard::Result<&'a mut [u8]> {
+        postcard::to_slice_cobs(self, buffer)
+    }
 }
 
 impl Parser {
@@ -196,80 +202,28 @@ impl Parser {
         }
     }
 
-    pub fn consume(&mut self, byte: u8) -> Result<Option<MessageFrame>, ParserError> {
+    pub fn consume(&mut self, byte: u8) -> Result<Option<Message>, ParserError> {
         self.message_buffer[self.received_bytes] = byte;
         self.received_bytes += 1;
 
-        if byte == MessageFrame::SENTINEL_BYTE {
-            if self.received_bytes == MessageFrame::COBS_BYTE_SIZE {
+        if byte == SENTINEL_BYTE {
+            if self.received_bytes > 1 {
+                let received_bytes = self.received_bytes;
                 self.received_bytes = 0;
-                let message =
-                    MessageFrame::cobs_decode(self.message_buffer).map_err(|e| ParserError::DeocdeError(e))?;
+                let message = postcard::from_bytes_cobs(&mut self.message_buffer)
+                    .map_err(|e| ParserError::DecodeError(e, self.message_buffer, received_bytes))?;
 
                 return Ok(Some(message));
             } else {
-                let err = ParserError::FrameTooShort(self.received_bytes);
+                let err = ParserError::EmptyFrame;
                 self.received_bytes = 0;
                 return Err(err);
             }
-        } else if self.received_bytes == MessageFrame::COBS_BYTE_SIZE {
+        } else if self.received_bytes == MAX_FRAME_SIZE {
             self.received_bytes = 0;
             return Err(ParserError::FrameTooLong);
         }
 
         Ok(None)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn get_test_message() -> MessageFrame {
-        MessageFrame::new(MessageAction::Pluck, GuitarString::D, Fret::Fret6, 0.into())
-    }
-
-    #[test]
-    fn encode_decode() {
-        let message = get_test_message();
-        let bytes = message.encode();
-        let message2 = MessageFrame::decode(bytes).unwrap();
-
-        assert_eq!(message.action, message2.action);
-        assert_eq!(message.string, message2.string);
-        assert_eq!(message.fret, message2.fret);
-        assert_eq!(message.pluck_volume, message2.pluck_volume);
-    }
-
-    #[test]
-    fn cobs_encode_decode() {
-        let message = get_test_message();
-        let bytes = message.cobs_encode();
-        let message2 = MessageFrame::cobs_decode(bytes).unwrap();
-
-        assert_eq!(message.action, message2.action);
-        assert_eq!(message.string, message2.string);
-        assert_eq!(message.fret, message2.fret);
-        assert_eq!(message.pluck_volume, message2.pluck_volume);
-    }
-
-    #[test]
-    fn parser() {
-        let message = get_test_message();
-        let bytes = message.cobs_encode();
-
-        let mut parser = Parser::new();
-        assert!(matches!(parser.consume(bytes[0]), Ok(None)));
-        assert!(matches!(parser.consume(bytes[1]), Ok(None)));
-        assert!(matches!(parser.consume(bytes[2]), Ok(None)));
-        assert!(matches!(parser.consume(bytes[3]), Ok(None)));
-        assert!(matches!(parser.consume(bytes[4]), Ok(None)));
-
-        let message2 = parser.consume(bytes[5]).unwrap().unwrap();
-
-        assert_eq!(message.action, message2.action);
-        assert_eq!(message.string, message2.string);
-        assert_eq!(message.fret, message2.fret);
-        assert_eq!(message.pluck_volume, message2.pluck_volume);
     }
 }

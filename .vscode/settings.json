@@ -11,7 +11,8 @@
         "pluck/Cargo.toml",
         "protocol/Cargo.toml",
         "rs485host/Cargo.toml",
-        "fret/Cargo.toml"
+        "fret/Cargo.toml",
+        "conductor/Cargo.toml"
     ],
     "rust-analyzer.check.command": "clippy"
 }

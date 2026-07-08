@@ -21,6 +21,7 @@ embedded-io = "0.7"
 embedded-io-async = "0.7"
 embedded-storage = "0.3.1"
 cortex-m-rt = "0.7.3"
+static_cell = "2"
 
 embassy-executor = { version = "0.10", features = [
     "platform-cortex-m",
@@ -43,6 +44,9 @@ embassy-stm32 = { version = "0.6", features = [
     "time-driver-tim3",
 ] }
 
+portable-atomic = { version = "1", default-features = false, features = [
+    "unsafe-assume-single-core",
+] }
 protocol = { path = "../protocol" }
 
 [profile.release]

@@ -1,16 +1,16 @@
 use embassy_stm32::gpio::{Level, Output, OutputType, Speed};
-use embassy_stm32::mode::Async;
 use embassy_stm32::peripherals::{TIM1, TIM14, TIM16, TIM17};
 use embassy_stm32::time::khz;
 use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm, SimplePwmChannel};
-use embassy_stm32::usart::Uart;
+use embassy_stm32::usart::BufferedUart;
 use embassy_stm32::{Config, bind_interrupts, dma, peripherals, usart};
+use static_cell::ConstStaticCell;
 
 pub mod strings;
-pub type Rs485 = Uart<'static, Async>;
+pub type Rs485 = BufferedUart<'static>;
 
 bind_interrupts!(struct Irqs {
-    USART2 => usart::InterruptHandler<peripherals::USART2>;
+    USART2 => usart::BufferedInterruptHandler<peripherals::USART2>;
     DMA1_CHANNEL2_3 => dma::InterruptHandler<peripherals::DMA1_CH2>, dma::InterruptHandler<peripherals::DMA1_CH3>;
 });
 
@@ -50,7 +50,20 @@ pub fn init() -> Hw {
 
     let mut config = usart::Config::default();
     config.baudrate = 115200;
-    let usart = Uart::new_with_de(p.USART2, p.PA3, p.PA2, p.PA1, p.DMA1_CH2, p.DMA1_CH3, Irqs, config).unwrap();
+    static TX_BUF: ConstStaticCell<[u8; 32]> = ConstStaticCell::new([0; _]);
+    static RX_BUF: ConstStaticCell<[u8; 32]> = ConstStaticCell::new([0; _]);
+
+    let usart = BufferedUart::new_with_de(
+        p.USART2,
+        p.PA3,
+        p.PA2,
+        p.PA1,
+        Irqs,
+        TX_BUF.take(),
+        RX_BUF.take(),
+        config,
+    )
+    .unwrap();
 
     let pb3_pwm = PwmPin::new(p.PB3, OutputType::PushPull);
     let pa11_pwm = PwmPin::new(p.PA11, OutputType::PushPull);

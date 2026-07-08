@@ -10,12 +10,13 @@ use embassy_rp::{gpio, uart};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
-use protocol::{Fret, GuitarString, MessageAction, MessageFrame, Parser, PluckVolume};
+use embedded_io_async::Read;
+use embedded_io_async::Write;
+use protocol::{GuitarString, Message, Parser, PluckVolume};
 use stepgen::Stepgen;
-
 use {defmt_rtt as _, panic_probe as _};
 
-type PluckSignal = Signal<CriticalSectionRawMutex, MessageAction>;
+type PluckSignal = Signal<CriticalSectionRawMutex, Message>;
 type VolumeSignal = Signal<CriticalSectionRawMutex, PluckVolume>;
 
 struct ChannelSignals {
@@ -61,10 +62,11 @@ async fn send_bytes(bytes: &[u8], rs485: &mut Rs485) -> Result<(), uart::Error> 
     Ok(())
 }
 
-async fn send_confirm_presence(request: &MessageFrame, rs485: &mut Rs485) {
-    let message = MessageFrame::new(MessageAction::ConfirmPresence, request.string, request.fret, 0.into());
-    let bytes = message.cobs_encode();
-    if let Err(e) = send_bytes(&bytes, rs485).await {
+async fn send_confirm_presence(rs485: &mut Rs485) {
+    let message = Message::ConfirmPresence;
+    let mut buffer = [0; protocol::MAX_FRAME_SIZE];
+    let frame = message.encode(&mut buffer).unwrap();
+    if let Err(e) = send_bytes(frame, rs485).await {
         defmt::error!("TX error: {}", e);
     }
 }
@@ -80,19 +82,23 @@ fn get_signals(string: GuitarString) -> &'static ChannelSignals {
     }
 }
 
-async fn process_message(message: &MessageFrame, rs485: &mut Rs485) {
+async fn process_message(message: &Message, rs485: &mut Rs485) {
     defmt::info!("Incoming Message: {}", message);
 
-    if !is_string_relevant(message.string) {
+    let Some(string) = message.get_string() else {
+        return;
+    };
+
+    if !is_string_relevant(string) {
         return;
     }
 
-    match message.action {
-        MessageAction::Presence if message.fret == Fret::NoFret => send_confirm_presence(message, rs485).await,
-        MessageAction::Pluck | MessageAction::PluckDisable | MessageAction::PluckEnable => {
-            get_signals(message.string).pluck_signal.signal(message.action)
+    match message {
+        Message::PluckPresence(_) => send_confirm_presence(rs485).await,
+        Message::Pluck(string) | Message::PluckDisable(string) | Message::PluckEnable(string) => {
+            get_signals(*string).pluck_signal.signal(*message)
         }
-        MessageAction::PluckVolume => get_signals(message.string).volume_signal.signal(message.pluck_volume),
+        Message::PluckVolume(string, volume) => get_signals(*string).volume_signal.signal(*volume),
         _ => {}
     }
 }
@@ -212,15 +218,15 @@ async fn stepper_task(stepper: PluckStepper, signal: &'static PluckSignal) -> ! 
         let action = signal.wait().await;
 
         match (action, stepper.state) {
-            (MessageAction::PluckEnable, PluckStepperState::Disabled) => stepper.enable().await,
+            (Message::PluckEnable(_), PluckStepperState::Disabled) => stepper.enable().await,
 
-            (MessageAction::PluckDisable, _) => stepper.disable().await,
+            (Message::PluckDisable(_), _) => stepper.disable().await,
 
             (_, PluckStepperState::Disabled) => {
                 defmt::warn!("Received {} command, but stepper is disabled", action)
             }
 
-            (MessageAction::Pluck, PluckStepperState::EnabledLeft | PluckStepperState::EnabledRight) => {
+            (Message::Pluck(_), PluckStepperState::EnabledLeft | PluckStepperState::EnabledRight) => {
                 stepper.pluck().await
             }
 

@@ -1,21 +1,21 @@
 use embassy_rp::{
     self, bind_interrupts,
     clocks::ClockConfig,
-    config, dma,
+    config,
     gpio::{
         Level::{High, Low},
         Output,
     },
-    peripherals::{DMA_CH0, DMA_CH1, UART1},
+    peripherals::UART1,
     pwm::{self, Pwm, PwmOutput},
-    uart::{self, Uart},
+    uart::{self, BufferedUart, Uart},
 };
 
 use fixed::traits::ToFixed;
+use static_cell::ConstStaticCell;
 
 bind_interrupts!(pub struct Irqs {
-    UART1_IRQ  => uart::InterruptHandler<UART1>;
-    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>, dma::InterruptHandler<DMA_CH1>;
+    UART1_IRQ  => uart::BufferedInterruptHandler<UART1>;
 });
 
 pub const SYS_CLOCK: u32 = 125_000_000;
@@ -47,7 +47,7 @@ pub struct VolumePwm {
 }
 
 pub struct Rs485 {
-    pub uart: Uart<'static, uart::Async>,
+    pub uart: BufferedUart,
     pub de: Output<'static>,
 }
 
@@ -60,7 +60,10 @@ pub fn init() -> Hw {
         let mut config = uart::Config::default();
         config.baudrate = 115200;
 
-        let uart = Uart::new(p.UART1, p.PIN_20, p.PIN_21, Irqs, p.DMA_CH0, p.DMA_CH1, config);
+        static TX_BUF: ConstStaticCell<[u8; 32]> = ConstStaticCell::new([0; _]);
+        static RX_BUF: ConstStaticCell<[u8; 32]> = ConstStaticCell::new([0; _]);
+
+        let uart = BufferedUart::new(p.UART1, p.PIN_20, p.PIN_21, Irqs, TX_BUF.take(), RX_BUF.take(), config);
 
         let de = Output::new(p.PIN_22, Low);
 

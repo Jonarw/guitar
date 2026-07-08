@@ -5,9 +5,8 @@ edition = "2024"
 
 [dependencies]
 #cobs = { version = "0.5", default-features = false, features = ["defmt"] }
-defmt = "1.0"
-num_enum = { version = "0.7", default-features = false }
-postcard = "1"
+defmt = "1"
+postcard = { version = "1", features = ["use-defmt"] }
 
 # By default, `serde` has the `std` feature enabled, which makes it unsuitable for embedded targets
 # disabling default-features fixes this

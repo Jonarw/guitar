@@ -1,7 +1,7 @@
 use clap::Parser;
-use protocol::{Fret, GuitarString, MessageAction, MessageFrame};
+use protocol::{ConfigValue, Fret, GuitarString, Message, Percentage};
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::Duration as StdDuration;
 
 #[derive(Parser)]
 struct Args {
@@ -20,12 +20,14 @@ fn main() -> anyhow::Result<()> {
     // let args = Args::parse();
 
     let mut port = serialport::new(&args.port, args.baud_rate)
-        .timeout(Duration::from_millis(100))
+        .timeout(StdDuration::from_millis(100))
         .open()
         .expect("Failed to open serial port");
 
     println!("Connected to {}.", args.port);
-    println!("Available commands: F[S][N], P[S], D[S][N], R[S][N], V[S][u8], E[S], I[S]");
+    println!(
+        "Available commands: F[S][N], f[S][N], A[S][N], C[S][N], c[S][N], P[S], D[S][N], R[S][N], V[S][u8], E[S], I[S], O[fret].[id].[value]"
+    );
 
     loop {
         print!("> ");
@@ -41,8 +43,9 @@ fn main() -> anyhow::Result<()> {
 
         match parse_command(input) {
             Ok(msg) => {
-                let buffer = msg.cobs_encode();
-                port.write_all(&buffer)?;
+                let mut buffer = [0; protocol::MAX_FRAME_SIZE];
+                let frame = msg.encode(&mut buffer)?;
+                port.write_all(frame)?;
             }
             Err(e) => {
                 eprintln!("Parse error: {e}");
@@ -53,7 +56,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn parse_command(line: &str) -> Result<MessageFrame, String> {
+fn parse_command(line: &str) -> Result<Message, String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return Err("empty command".to_string());
@@ -66,61 +69,124 @@ fn parse_command(line: &str) -> Result<MessageFrame, String> {
     match command {
         'F' => {
             let (string, fret) = parse_string_and_fret(rest)?;
-            Ok(MessageFrame::new(MessageAction::FretFast, string, fret, 0.into()))
+            Ok(Message::FretFast(string, fret))
         }
         'f' => {
             let (string, fret) = parse_string_and_fret(rest)?;
-            Ok(MessageFrame::new(MessageAction::FretQuiet, string, fret, 0.into()))
+            Ok(Message::FretQuiet(string, fret))
+        }
+        'A' | 'a' => {
+            let (string, fret) = parse_string_and_fret(rest)?;
+            Ok(Message::FretAdaptive(string, fret))
         }
         'C' | 'c' => {
             let (string, fret) = parse_string_and_fret(rest)?;
-            Ok(MessageFrame::new(
-                MessageAction::FretCalibration,
-                string,
-                fret,
-                0.into(),
-            ))
+            Ok(Message::FretCalibration(string, fret))
         }
+        'O' | 'o' => parse_config_command(rest),
         'P' | 'p' => {
             let string = parse_string_only(rest)?;
-            Ok(MessageFrame::new(MessageAction::Pluck, string, Fret::NoFret, 0.into()))
+            Ok(Message::Pluck(string))
         }
         'E' | 'e' => {
             let string = parse_string_only(rest)?;
-            Ok(MessageFrame::new(
-                MessageAction::PluckEnable,
-                string,
-                Fret::NoFret,
-                0.into(),
-            ))
+            Ok(Message::PluckEnable(string))
         }
         'I' | 'i' => {
             let string = parse_string_only(rest)?;
-            Ok(MessageFrame::new(
-                MessageAction::PluckDisable,
-                string,
-                Fret::NoFret,
-                0.into(),
-            ))
+            Ok(Message::PluckDisable(string))
         }
         'D' | 'd' => {
             let (string, fret) = parse_string_and_fret(rest)?;
-            Ok(MessageFrame::new(MessageAction::Dampen, string, fret, 0.into()))
+            Ok(Message::Dampen(string, fret))
         }
         'R' | 'r' => {
             let (string, fret) = parse_string_and_fret(rest)?;
-            Ok(MessageFrame::new(MessageAction::Unfret, string, fret, 0.into()))
+            Ok(Message::Unfret(string, fret))
         }
         'V' | 'v' => {
             let (string, volume) = parse_string_and_volume(rest)?;
-            Ok(MessageFrame::new(
-                MessageAction::PluckVolume,
-                string,
-                Fret::NoFret,
-                volume.into(),
-            ))
+            Ok(Message::PluckVolume(string, volume.into()))
         }
-        _ => Err(format!("unknown command '{}'; expected F, P, D, R, C or V", command)),
+        _ => Err(format!(
+            "unknown command '{}'; expected F, f, A, C, c, P, D, R, V, E, I or O",
+            command
+        )),
+    }
+}
+
+fn parse_config_command(rest: &str) -> Result<Message, String> {
+    if rest.is_empty() {
+        return Err("missing config payload; expected O[fret].[id].[value]".to_string());
+    }
+
+    let mut parts = rest.split('.');
+
+    let fret_str = parts.next().ok_or_else(|| "missing fret; expected 1-18".to_string())?;
+    let id_str = parts
+        .next()
+        .ok_or_else(|| "missing config id; expected 1-15".to_string())?;
+    let value_str = parts
+        .next()
+        .ok_or_else(|| "missing config value; expected u8 or u16".to_string())?;
+
+    if parts.next().is_some() {
+        return Err("too many fields; expected O[fret].[id].[value]".to_string());
+    }
+
+    if fret_str.is_empty() || id_str.is_empty() || value_str.is_empty() {
+        return Err("invalid config payload; expected O[fret].[id].[value]".to_string());
+    }
+
+    let fret_number = fret_str
+        .parse::<u8>()
+        .map_err(|_| "invalid fret; expected 1-18".to_string())?;
+    let fret = parse_fret(fret_number)?;
+
+    let config_id = id_str
+        .parse::<u8>()
+        .map_err(|_| "invalid config id; expected 1-15".to_string())?;
+
+    let config_value = parse_config_value(config_id, value_str)?;
+    Ok(Message::Config(fret, config_value))
+}
+
+fn parse_percentage(value: &str) -> Result<Percentage, String> {
+    let parsed = value
+        .parse::<u8>()
+        .map_err(|_| "invalid percentage; expected 0-100".to_string())?;
+    if parsed > 100 {
+        return Err("invalid percentage; expected 0-100".to_string());
+    }
+
+    Ok(Percentage::new(parsed))
+}
+
+fn parse_duration_ms(value: &str) -> Result<protocol::Duration, String> {
+    let parsed = value
+        .parse::<u16>()
+        .map_err(|_| "invalid duration; expected 0-65535 ms".to_string())?;
+    Ok(protocol::Duration::new(parsed))
+}
+
+fn parse_config_value(config_id: u8, value_str: &str) -> Result<ConfigValue, String> {
+    match config_id {
+        1 => Ok(ConfigValue::MaxForce(parse_percentage(value_str)?)),
+        2 => Ok(ConfigValue::HoldForce(parse_percentage(value_str)?)),
+        3 => Ok(ConfigValue::DampenForce(parse_percentage(value_str)?)),
+        4 => Ok(ConfigValue::MarginalForce(parse_percentage(value_str)?)),
+        5 => Ok(ConfigValue::ReleaseDuration(parse_duration_ms(value_str)?)),
+        6 => Ok(ConfigValue::DampenToFretRampDuration(parse_duration_ms(value_str)?)),
+        7 => Ok(ConfigValue::FretFastMaxForceDuration(parse_duration_ms(value_str)?)),
+        8 => Ok(ConfigValue::FretQuietPhase1Duration(parse_duration_ms(value_str)?)),
+        9 => Ok(ConfigValue::FretQuietPhase2Duration(parse_duration_ms(value_str)?)),
+        10 => Ok(ConfigValue::FretAdaptivePhase1Duration(parse_duration_ms(value_str)?)),
+        11 => Ok(ConfigValue::FretAdaptivePhase2Duration(parse_duration_ms(value_str)?)),
+        12 => Ok(ConfigValue::FretAdaptivePhase3Durtaion(parse_duration_ms(value_str)?)),
+        13 => Ok(ConfigValue::FretAdaptivePhase1Force(parse_percentage(value_str)?)),
+        14 => Ok(ConfigValue::FretAdaptivePhase2Force(parse_percentage(value_str)?)),
+        15 => Ok(ConfigValue::FretAdaptivePhase3Force(parse_percentage(value_str)?)),
+        _ => Err(format!("invalid config id {}; expected 1-15", config_id)),
     }
 }
 
@@ -224,45 +290,62 @@ mod tests {
 
     #[test]
     fn parses_fret_command() {
-        let frame = parse_command("FD6").unwrap();
-        assert_eq!(frame.action, MessageAction::Fret);
-        assert_eq!(frame.string, GuitarString::D);
-        assert_eq!(frame.fret, Fret::Fret6);
+        let msg = parse_command("FD6").unwrap();
+        assert_eq!(msg, Message::FretFast(GuitarString::D, Fret::Fret6));
+    }
+
+    #[test]
+    fn parses_adaptive_fret_command() {
+        let msg = parse_command("AE7").unwrap();
+        assert_eq!(msg, Message::FretAdaptive(GuitarString::E, Fret::Fret7));
     }
 
     #[test]
     fn parses_pluck_command() {
-        let frame = parse_command("Pe").unwrap();
-        assert_eq!(frame.action, MessageAction::Pluck);
-        assert_eq!(frame.string, GuitarString::e);
-        assert_eq!(frame.fret, Fret::NoFret);
+        let msg = parse_command("Pe").unwrap();
+        assert_eq!(msg, Message::Pluck(GuitarString::e));
     }
 
     #[test]
     fn parses_dampen_and_unfret_commands() {
         let dampen = parse_command("DB10").unwrap();
-        assert_eq!(dampen.action, MessageAction::Dampen);
-        assert_eq!(dampen.string, GuitarString::B);
-        assert_eq!(dampen.fret, Fret::Fret10);
+        assert_eq!(dampen, Message::Dampen(GuitarString::B, Fret::Fret10));
 
         let unfret = parse_command("RE18").unwrap();
-        assert_eq!(unfret.action, MessageAction::Unfret);
-        assert_eq!(unfret.string, GuitarString::E);
-        assert_eq!(unfret.fret, Fret::Fret18);
+        assert_eq!(unfret, Message::Unfret(GuitarString::E, Fret::Fret18));
     }
 
     #[test]
     fn parses_volume_command() {
-        let frame = parse_command("VD255").unwrap();
-        assert_eq!(frame.action, MessageAction::Volume);
-        assert_eq!(frame.string, GuitarString::D);
-        assert_eq!(frame.pluck_volume.volume(), 255);
+        let msg = parse_command("VD255").unwrap();
+        assert_eq!(msg, Message::PluckVolume(GuitarString::D, 255u8.into()));
     }
 
     #[test]
-    fn rejects_invalid_fret_and_volume() {
+    fn parses_config_commands() {
+        let force = parse_command("O6.1.75").unwrap();
+        assert_eq!(
+            force,
+            Message::Config(Fret::Fret6, ConfigValue::MaxForce(Percentage::new(75)))
+        );
+
+        let duration = parse_command("O12.10.420").unwrap();
+        assert_eq!(
+            duration,
+            Message::Config(
+                Fret::Fret12,
+                ConfigValue::FretAdaptivePhase1Duration(protocol::Duration::new(420))
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_fret_volume_and_config() {
         assert!(parse_command("FA0").is_err());
         assert!(parse_command("VD256").is_err());
         assert!(parse_command("V256").is_err());
+        assert!(parse_command("O6.16.6").is_err());
+        assert!(parse_command("O6.1.160").is_err());
+        assert!(parse_command("O6.1").is_err());
     }
 }

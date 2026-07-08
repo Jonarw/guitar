@@ -1,0 +1,10 @@
+[package]
+name = "guitar_conductor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serialport = { version = "4", default-features = false }
+anyhow = "1"
+
+protocol = { path = "../protocol" }
