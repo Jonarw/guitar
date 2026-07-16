@@ -5,8 +5,8 @@ tempo 110
 0 pluck_volume A 20
 1 pluck_enable E
 1 pluck_enable A
-#2 pluck_volume E 130
-#2 pluck_volume A 70
+2 pluck_volume E 130
+2 pluck_volume A 70
 
 # bar 1
 4 pluck E

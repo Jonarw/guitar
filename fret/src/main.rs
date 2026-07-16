@@ -14,7 +14,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 pub mod hw;
 
-pub static MY_FRET: Fret = Fret::Fret1;
+pub static MY_FRET: Fret = Fret::Fret12;
 type FretSignal = Signal<ThreadModeRawMutex, Message>;
 
 static FRET_SIGNALS: [FretSignal; 6] = [
@@ -66,7 +66,7 @@ impl Config {
         Self {
             pwm_max_force: Percentage::new(100),
             pwm_hold_force: Percentage::new(45),
-            pwm_dampen_force: Percentage::new(28),
+            pwm_dampen_force: Percentage::new(24),
             pwm_marginal_force: Percentage::new(13),
             release_break_off_time: Duration::from_millis(3),
             dampen_to_fret_ramp_duration: Duration::from_millis(100),
@@ -119,65 +119,146 @@ async fn pwm_ramp(pwm: &mut GuitarStringPwm, start: u8, end: u8, duration: Durat
     pwm.set_duty_cycle_percent(end);
 }
 
-async fn idle_to_down(pwm: &mut GuitarStringPwm, config: &Config) {
-    pwm.set_duty_cycle_percent(config.idle_to_down_phase1_force.into());
-    Timer::after(config.idle_to_down_phase1_duration).await;
-    pwm.set_duty_cycle_percent(config.idle_to_down_phase2_force.into());
-    Timer::after(config.idle_to_down_phase2_duration).await;
-    pwm.set_duty_cycle_percent(config.pwm_dampen_force.into());
+async fn idle_to_down(pwm: &mut GuitarStringPwm) {
+    let (
+        idle_to_down_phase1_force,
+        idle_to_down_phase1_duration,
+        idle_to_down_phase2_force,
+        idle_to_down_phase2_duration,
+        pwm_dampen_force,
+    ) = {
+        let config = CONFIG.lock().await;
+        (
+            config.idle_to_down_phase1_force,
+            config.idle_to_down_phase1_duration,
+            config.idle_to_down_phase2_force,
+            config.idle_to_down_phase2_duration,
+            config.pwm_dampen_force,
+        )
+    };
+
+    pwm.set_duty_cycle_percent(idle_to_down_phase1_force.into());
+    Timer::after(idle_to_down_phase1_duration).await;
+    pwm.set_duty_cycle_percent(idle_to_down_phase2_force.into());
+    Timer::after(idle_to_down_phase2_duration).await;
+    pwm.set_duty_cycle_percent(pwm_dampen_force.into());
 }
 
-async fn down_to_idle(pwm: &mut GuitarStringPwm, config: &Config) {
-    pwm.set_duty_cycle_percent(config.down_to_idle_phase1_force.into());
-    Timer::after(config.down_to_idle_phase1_duration).await;
-    pwm.set_duty_cycle_percent(config.down_to_idle_phase2_force.into());
-    Timer::after(config.down_to_idle_phase2_duration).await;
+async fn down_to_idle(pwm: &mut GuitarStringPwm) {
+    let (
+        down_to_idle_phase1_force,
+        down_to_idle_phase1_duration,
+        down_to_idle_phase2_force,
+        down_to_idle_phase2_duration,
+    ) = {
+        let config = CONFIG.lock().await;
+        (
+            config.down_to_idle_phase1_force,
+            config.down_to_idle_phase1_duration,
+            config.down_to_idle_phase2_force,
+            config.down_to_idle_phase2_duration,
+        )
+    };
+
+    pwm.set_duty_cycle_percent(down_to_idle_phase1_force.into());
+    Timer::after(down_to_idle_phase1_duration).await;
+    pwm.set_duty_cycle_percent(down_to_idle_phase2_force.into());
+    Timer::after(down_to_idle_phase2_duration).await;
     pwm.set_duty_cycle_fully_off();
 }
 
-async fn fret_fast(pwm: &mut GuitarStringPwm, state: FretState, config: &Config) {
+async fn fret_fast(pwm: &mut GuitarStringPwm, state: FretState) {
+    let (pwm_max_force, fret_fast_phase1_duration, pwm_hold_force, fret_fast_phase2_duration) = {
+        let config = CONFIG.lock().await;
+        (
+            config.pwm_max_force,
+            config.fret_fast_phase1_duration,
+            config.pwm_hold_force,
+            config.fret_fast_phase2_duration,
+        )
+    };
+
     match state {
         FretState::Idle => {
-            pwm.set_duty_cycle_percent(config.pwm_max_force.into());
-            Timer::after(config.fret_fast_phase1_duration).await;
-            pwm.set_duty_cycle_percent(config.pwm_hold_force.into());
+            pwm.set_duty_cycle_percent(pwm_max_force.into());
+            Timer::after(fret_fast_phase1_duration).await;
+            pwm.set_duty_cycle_percent(pwm_hold_force.into());
         }
         FretState::Fretting => {}
         FretState::Dampening => {
-            pwm.set_duty_cycle_percent(config.pwm_max_force.into());
-            Timer::after(config.fret_fast_phase2_duration).await;
-            pwm.set_duty_cycle_percent(config.pwm_hold_force.into());
+            pwm.set_duty_cycle_percent(pwm_max_force.into());
+            Timer::after(fret_fast_phase2_duration).await;
+            pwm.set_duty_cycle_percent(pwm_hold_force.into());
         }
     }
 }
 
-async fn fret_calibration(pwm: &mut GuitarStringPwm, state: FretState, config: &Config) {
-    fret_quiet(pwm, state, config).await;
-    pwm.set_duty_cycle_percent(config.pwm_hold_force.get_value() - config.fret_calibration_offset1);
-    Timer::after(config.fret_calibration_duration).await;
-    pwm.set_duty_cycle_percent(config.pwm_hold_force.get_value() - config.fret_calibration_offset2);
-    Timer::after(config.fret_calibration_duration).await;
+async fn fret_calibration(pwm: &mut GuitarStringPwm, state: FretState) {
+    fret_quiet(pwm, state).await;
+    let (pwm_hold_force, fret_calibration_offset1, fret_calibration_duration, fret_calibration_offset2) = {
+        let config = CONFIG.lock().await;
+        (
+            config.pwm_hold_force,
+            config.fret_calibration_offset1,
+            config.fret_calibration_duration,
+            config.fret_calibration_offset2,
+        )
+    };
+
+    pwm.set_duty_cycle_percent(pwm_hold_force.get_value() - fret_calibration_offset1);
+    Timer::after(fret_calibration_duration).await;
+    pwm.set_duty_cycle_percent(pwm_hold_force.get_value() - fret_calibration_offset2);
+    Timer::after(fret_calibration_duration).await;
     pwm.set_duty_cycle_fully_off();
 }
 
-async fn fret_adaptive(pwm: &mut GuitarStringPwm, state: FretState, config: &Config) {
-    pwm.set_duty_cycle_percent(config.fret_adaptive_phase1_force.get_value());
-    Timer::after(config.fret_adaptive_phase1_duration).await;
-    pwm.set_duty_cycle_percent(config.fret_adaptive_phase2_force.get_value());
-    Timer::after(config.fret_adaptive_phase2_duration).await;
-    pwm.set_duty_cycle_percent(config.fret_adaptive_phase3_force.get_value());
-    Timer::after(config.fret_adaptive_phase3_duration).await;
+async fn fret_adaptive(pwm: &mut GuitarStringPwm, state: FretState) {
+    let (
+        fret_adaptive_phase1_force,
+        fret_adaptive_phase1_duration,
+        fret_adaptive_phase2_force,
+        fret_adaptive_phase2_duration,
+        fret_adaptive_phase3_force,
+        fret_adaptive_phase3_duration,
+    ) = {
+        let config = CONFIG.lock().await;
+        (
+            config.fret_adaptive_phase1_force,
+            config.fret_adaptive_phase1_duration,
+            config.fret_adaptive_phase2_force,
+            config.fret_adaptive_phase2_duration,
+            config.fret_adaptive_phase3_force,
+            config.fret_adaptive_phase3_duration,
+        )
+    };
+
+    pwm.set_duty_cycle_percent(fret_adaptive_phase1_force.get_value());
+    Timer::after(fret_adaptive_phase1_duration).await;
+    pwm.set_duty_cycle_percent(fret_adaptive_phase2_force.get_value());
+    Timer::after(fret_adaptive_phase2_duration).await;
+    pwm.set_duty_cycle_percent(fret_adaptive_phase3_force.get_value());
+    Timer::after(fret_adaptive_phase3_duration).await;
 }
 
-async fn fret_quiet(pwm: &mut GuitarStringPwm, state: FretState, config: &Config) {
+async fn fret_quiet(pwm: &mut GuitarStringPwm, state: FretState) {
+    let (pwm_dampen_force, pwm_max_force, fret_quiet_phase2_duration, pwm_hold_force) = {
+        let config = CONFIG.lock().await;
+        (
+            config.pwm_dampen_force,
+            config.pwm_max_force,
+            config.fret_quiet_phase2_duration,
+            config.pwm_hold_force,
+        )
+    };
+
     match state {
         FretState::Idle => {
-            idle_to_down(pwm, config).await;
+            idle_to_down(pwm).await;
             pwm_ramp(
                 pwm,
-                config.pwm_dampen_force.into(),
-                config.pwm_max_force.into(),
-                config.fret_quiet_phase2_duration,
+                pwm_dampen_force.into(),
+                pwm_max_force.into(),
+                fret_quiet_phase2_duration,
             )
             .await;
         }
@@ -185,47 +266,65 @@ async fn fret_quiet(pwm: &mut GuitarStringPwm, state: FretState, config: &Config
         FretState::Dampening => {
             pwm_ramp(
                 pwm,
-                config.pwm_dampen_force.into(),
-                config.pwm_max_force.into(),
-                config.fret_quiet_phase2_duration,
+                pwm_dampen_force.into(),
+                pwm_max_force.into(),
+                fret_quiet_phase2_duration,
             )
             .await;
         }
     }
 
-    pwm.set_duty_cycle_percent(config.pwm_hold_force.into());
+    pwm.set_duty_cycle_percent(pwm_hold_force.into());
 }
 
-async fn dampen(pwm: &mut GuitarStringPwm, state: FretState, config: &Config) {
+async fn dampen(pwm: &mut GuitarStringPwm, state: FretState) {
+    let (pwm_dampen_force, release_break_off_time) = {
+        let config = CONFIG.lock().await;
+        (config.pwm_dampen_force, config.release_break_off_time)
+    };
+
     match state {
         FretState::Idle => {
-            idle_to_down(pwm, config).await;
-            pwm.set_duty_cycle_percent(config.pwm_dampen_force.into());
+            idle_to_down(pwm).await;
+            pwm.set_duty_cycle_percent(pwm_dampen_force.into());
         }
         FretState::Fretting => {
             pwm.set_duty_cycle_fully_off();
-            Timer::after(config.release_break_off_time).await;
-            pwm.set_duty_cycle_percent(config.pwm_dampen_force.into());
+            Timer::after(release_break_off_time).await;
+            pwm.set_duty_cycle_percent(pwm_dampen_force.into());
         }
         FretState::Dampening => {}
     }
 }
 
-async fn unfret(pwm: &mut GuitarStringPwm, state: FretState, config: &Config) {
+async fn unfret(pwm: &mut GuitarStringPwm, state: FretState) {
+    let (release_break_off_time, pwm_marginal_force, unfret_phase1_duration) = {
+        let config = CONFIG.lock().await;
+        (
+            config.release_break_off_time,
+            config.pwm_marginal_force,
+            config.unfret_phase1_duration,
+        )
+    };
+
     match state {
         FretState::Idle => {}
         FretState::Fretting => {
             pwm.set_duty_cycle_fully_off();
-            Timer::after(config.release_break_off_time).await;
-            pwm.set_duty_cycle_percent(config.pwm_marginal_force.into());
-            Timer::after(config.unfret_phase1_duration).await;
+            Timer::after(release_break_off_time).await;
+            pwm.set_duty_cycle_percent(pwm_marginal_force.into());
+            Timer::after(unfret_phase1_duration).await;
         }
         FretState::Dampening => {
-            pwm.set_duty_cycle_percent(config.pwm_marginal_force.into());
-            Timer::after(config.unfret_phase1_duration).await;
+            pwm.set_duty_cycle_percent(pwm_marginal_force.into());
+            Timer::after(unfret_phase1_duration).await;
         }
     }
 
+    pwm.set_duty_cycle_fully_off();
+}
+
+async fn unfret_fast(pwm: &mut GuitarStringPwm, state: FretState) {
     pwm.set_duty_cycle_fully_off();
 }
 
@@ -247,30 +346,33 @@ async fn string_task(mut pwm: GuitarStringPwm, signal: &'static FretSignal) {
 
         defmt::info!("Processing action {}", action);
 
-        let config = CONFIG.lock().await;
         match action {
             Message::FretFast(_, _) => {
-                fret_fast(&mut pwm, state, &config).await;
+                fret_fast(&mut pwm, state).await;
                 state = FretState::Fretting;
             }
             Message::FretQuiet(_, _) => {
-                fret_quiet(&mut pwm, state, &config).await;
+                fret_quiet(&mut pwm, state).await;
                 state = FretState::Fretting;
             }
-            Message::Unfret(_, _) | Message::Reset => {
-                unfret(&mut pwm, state, &config).await;
+            Message::Unfret(_, _) => {
+                unfret(&mut pwm, state).await;
+                state = FretState::Idle;
+            }
+            Message::UnfretFast(_, _) | Message::Reset => {
+                unfret_fast(&mut pwm, state).await;
                 state = FretState::Idle;
             }
             Message::Dampen(_, _) => {
-                dampen(&mut pwm, state, &config).await;
+                dampen(&mut pwm, state).await;
                 state = FretState::Dampening;
             }
             Message::FretCalibration(_, _) => {
-                fret_calibration(&mut pwm, state, &config).await;
+                fret_calibration(&mut pwm, state).await;
                 state = FretState::Idle;
             }
             Message::FretAdaptive(_, _) => {
-                fret_adaptive(&mut pwm, state, &config).await;
+                fret_adaptive(&mut pwm, state).await;
                 state = FretState::Fretting;
             }
             _ => {}
@@ -340,7 +442,7 @@ async fn apply_config(value: &ConfigValue) {
 async fn process_message(message: &Message, rs485: &mut Rs485) {
     defmt::info!("Incoming Message: {}", message);
 
-    if message.get_fret() != Some(MY_FRET) {
+    if !matches!(message, Message::Reset) && message.get_fret() != Some(MY_FRET) {
         return;
     }
 
@@ -349,6 +451,7 @@ async fn process_message(message: &Message, rs485: &mut Rs485) {
         Message::FretFast(guitar_string, _)
         | Message::FretQuiet(guitar_string, _)
         | Message::Unfret(guitar_string, _)
+        | Message::UnfretFast(guitar_string, _)
         | Message::Dampen(guitar_string, _)
         | Message::FretAdaptive(guitar_string, _)
         | Message::FretCalibration(guitar_string, _) => {

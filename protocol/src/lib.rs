@@ -15,6 +15,7 @@ pub enum Message {
     FretQuiet(GuitarString, Fret),
     FretAdaptive(GuitarString, Fret),
     Unfret(GuitarString, Fret),
+    UnfretFast(GuitarString, Fret),
     Dampen(GuitarString, Fret),
     FretCalibration(GuitarString, Fret),
     Config(Fret, ConfigValue),
@@ -28,6 +29,7 @@ impl Message {
             | Message::FretFast(_, fret)
             | Message::FretQuiet(_, fret)
             | Message::Unfret(_, fret)
+            | Message::UnfretFast(_, fret)
             | Message::Dampen(_, fret)
             | Message::FretAdaptive(_, fret)
             | Message::FretCalibration(_, fret)
@@ -47,6 +49,7 @@ impl Message {
             | Message::FretQuiet(guitar_string, _)
             | Message::FretAdaptive(guitar_string, _)
             | Message::Unfret(guitar_string, _)
+            | Message::UnfretFast(guitar_string, _)
             | Message::Dampen(guitar_string, _)
             | Message::FretCalibration(guitar_string, _) => Some(*guitar_string),
             _ => None,

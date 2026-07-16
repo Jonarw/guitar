@@ -61,7 +61,7 @@ pub fn init() -> Hw {
         config.baudrate = 115200;
 
         static TX_BUF: ConstStaticCell<[u8; 32]> = ConstStaticCell::new([0; _]);
-        static RX_BUF: ConstStaticCell<[u8; 32]> = ConstStaticCell::new([0; _]);
+        static RX_BUF: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0; _]);
 
         let uart = BufferedUart::new(p.UART1, p.PIN_20, p.PIN_21, Irqs, TX_BUF.take(), RX_BUF.take(), config);
 

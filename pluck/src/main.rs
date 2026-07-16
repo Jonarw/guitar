@@ -85,18 +85,26 @@ fn get_signals(string: GuitarString) -> &'static ChannelSignals {
 async fn process_message(message: &Message, rs485: &mut Rs485) {
     defmt::info!("Incoming Message: {}", message);
 
-    let Some(string) = message.get_string() else {
-        return;
-    };
+    if !matches!(message, Message::Reset) {
+        let Some(string) = message.get_string() else {
+            return;
+        };
 
-    if !is_string_relevant(string) {
-        return;
+        if !is_string_relevant(string) {
+            return;
+        }
     }
 
     match message {
         Message::PluckPresence(_) => send_confirm_presence(rs485).await,
         Message::Pluck(string) | Message::PluckDisable(string) | Message::PluckEnable(string) => {
             get_signals(*string).pluck_signal.signal(*message)
+        }
+        Message::Reset => {
+            for signal in SIGNALS.iter() {
+                signal.pluck_signal.signal(*message);
+                signal.volume_signal.signal(50.into());
+            }
         }
         Message::PluckVolume(string, volume) => get_signals(*string).volume_signal.signal(*volume),
         _ => {}
@@ -220,11 +228,10 @@ async fn stepper_task(stepper: PluckStepper, signal: &'static PluckSignal) -> ! 
         match (action, stepper.state) {
             (Message::PluckEnable(_), PluckStepperState::Disabled) => stepper.enable().await,
 
-            (Message::PluckDisable(_), _) => stepper.disable().await,
-
-            (_, PluckStepperState::Disabled) => {
-                defmt::warn!("Received {} command, but stepper is disabled", action)
-            }
+            (
+                Message::PluckDisable(_) | Message::Reset,
+                PluckStepperState::EnabledLeft | PluckStepperState::EnabledRight,
+            ) => stepper.disable().await,
 
             (Message::Pluck(_), PluckStepperState::EnabledLeft | PluckStepperState::EnabledRight) => {
                 stepper.pluck().await
