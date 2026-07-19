@@ -6,20 +6,20 @@ pub struct Score {
     pub strings: [StringPart; NUMBER_OF_STRINGS],
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Global {
     pub tempo: Option<u32>,
     pub time: Option<TimeSignature>,
     pub key: Option<Key>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TimeSignature {
     pub numerator: u8,
     pub denominator: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Key {
     pub tonic: PitchClass,
     pub major: bool,
@@ -52,7 +52,7 @@ pub struct Rest {
     pub dynamic: Option<Dynamic>,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub enum Accidental {
     Minus2,
     Minus1,
@@ -62,7 +62,7 @@ pub enum Accidental {
     Plus2,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dynamic {
     PPP,
     PP,
@@ -77,7 +77,7 @@ pub enum Dynamic {
     CrescendoEnd,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PitchClass {
     C,
     D,
