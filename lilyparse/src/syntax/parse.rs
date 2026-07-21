@@ -1,14 +1,10 @@
 use winnow::{
     Result,
-    ascii::{digit1, multispace1, till_line_ending},
+    ascii::{alpha1, digit1, multispace1, till_line_ending},
     combinator::{alt, delimited, opt, preceded, repeat, seq, terminated},
-    error::{
-        ContextError,
-        StrContext::{self, Expected, Label},
-        StrContextValue,
-    },
+    error::{ContextError, StrContext::Label},
     prelude::*,
-    token::{any, take_while},
+    token::take_while,
 };
 
 use crate::syntax::ast::*;
@@ -23,23 +19,34 @@ fn pitch_class(input: &mut &str) -> Result<PitchClass> {
         'f'.value(PitchClass::F),
         'g'.value(PitchClass::G),
     ))
-    .context(Expected(StrContextValue::Description("letter between 'a' and 'g'")))
     .context(Label("Pitch"))
     .parse_next(input)
 }
 
 fn accidental(input: &mut &str) -> Result<Accidental> {
     alt((
-        "eses".value(Accidental::Minus2),
-        "isis".value(Accidental::Plus2),
-        "es".value(Accidental::Minus1),
-        "is".value(Accidental::Plus1),
-        "".value(Accidental::Zero),
+        "eses".value(Accidental::DoubleFlat),
+        "isis".value(Accidental::DoubleSharp),
+        "es".value(Accidental::Flat),
+        "is".value(Accidental::Sharp),
+        "".value(Accidental::None),
     ))
-    .context(Expected(StrContextValue::Description(
-        "accidental suffix (es, is, eses, isis)",
-    )))
     .context(Label("Pitch"))
+    .parse_next(input)
+}
+
+fn articulation(input: &mut &str) -> Result<Articulation> {
+    preceded(
+        '-',
+        alt((
+            '.'.value(Articulation::Staccato),
+            '!'.value(Articulation::Staccatissimo),
+            '-'.value(Articulation::Tenuto),
+            '_'.value(Articulation::Portato),
+            '^'.value(Articulation::Marcato),
+        )),
+    )
+    .context(Label("Articulation"))
     .parse_next(input)
 }
 
@@ -50,75 +57,104 @@ fn octave(input: &mut &str) -> Result<i8> {
         .parse_next(input)
 }
 
-fn duration(input: &mut &str) -> Result<Option<u32>> {
-    opt(digit1.parse_to()).context(Label("Duration")).parse_next(input)
-}
-
-fn command<'s>(input: &mut &'s str) -> Result<&'s str> {
-    preceded('\\', take_while(1.., |c: char| c.is_alpha() || c == '<' || c == '>'))
-        .context(Label("Command"))
-        .context(Expected(StrContextValue::Description("\\[Command]")))
+fn duration(input: &mut &str) -> Result<NoteDuration> {
+    (digit1.parse_to(), repeat(0.., '.').fold(|| 0, |i, _| i + 1))
+        .context(Label("Duration"))
+        .map(|(ratio, augmentation)| NoteDuration { ratio, augmentation })
         .parse_next(input)
 }
 
+fn command<'a, O, P>(parser: P) -> impl Parser<&'a str, O, ContextError>
+where
+    P: Parser<&'a str, O, ContextError>,
+{
+    preceded('\\', parser).context(Label("Command"))
+}
+
 fn expect_command<'s>(command_name: &'static str) -> impl Parser<&'s str, (), ContextError> {
-    command
-        .verify(move |cmd: &str| cmd == command_name)
-        .context(Label(command_name))
-        .void()
+    command(command_name).void()
 }
 
-impl TryFrom<&str> for Dynamic {
-    type Error = ContextError;
-
-    fn try_from(cmd: &str) -> Result<Self, Self::Error> {
-        match cmd {
-            "ppp" => Ok(Dynamic::PPP),
-            "fff" => Ok(Dynamic::FFF),
-            "pp" => Ok(Dynamic::PP),
-            "ff" => Ok(Dynamic::FF),
-            "p" => Ok(Dynamic::P),
-            "f" => Ok(Dynamic::F),
-            "mp" => Ok(Dynamic::MP),
-            "mf" => Ok(Dynamic::MF),
-            ">" => Ok(Dynamic::DecrescendoStart),
-            "<" => Ok(Dynamic::CrescendoStart),
-            "!" => Ok(Dynamic::CrescendoEnd),
-            _ => {
-                let mut error = ContextError::new();
-                error.push(Label("Dynamic"));
-                Err(error)
-            }
-        }
-    }
+fn dynamic(input: &mut &str) -> Result<Dynamic> {
+    command(alt((
+        "ppp".value(Dynamic::PPP),
+        "fff".value(Dynamic::FFF),
+        "pp".value(Dynamic::PP),
+        "ff".value(Dynamic::FF),
+        "p".value(Dynamic::P),
+        "f".value(Dynamic::F),
+        "mp".value(Dynamic::MP),
+        "mf".value(Dynamic::MF),
+    )))
+    .context(Label("Dynamic"))
+    .parse_next(input)
 }
 
-fn dynamic(input: &mut &str) -> Result<Option<Dynamic>> {
-    let Some(cmd) = opt(command).context(Label("Dynamic command")).parse_next(input)? else {
-        return Ok(None);
-    };
-
-    Ok(Some(Dynamic::try_from(cmd)?))
+fn crescendo(input: &mut &str) -> Result<Crescendo> {
+    command(alt((
+        "<".value(Crescendo::CrescendoStart),
+        ">".value(Crescendo::DecrescendoStart),
+        "!".value(Crescendo::End),
+    )))
+    .context(Label("Crescendo"))
+    .parse_next(input)
 }
 
 fn rest(input: &mut &str) -> Result<Rest> {
-    preceded('r', (duration, dynamic))
+    preceded('r', (opt(duration), opt(dynamic)))
         .context(Label("Rest"))
         .parse_next(input)
         .map(|(duration, dynamic)| Rest { duration, dynamic })
 }
 
+enum Modifier {
+    Dynamic(Dynamic),
+    Articulation(Articulation),
+    Crescendo(Crescendo),
+}
+
+fn modifier(input: &mut &str) -> Result<Modifier> {
+    alt((
+        dynamic.map(Modifier::Dynamic),
+        articulation.map(Modifier::Articulation),
+        crescendo.map(Modifier::Crescendo),
+    ))
+    .parse_next(input)
+}
+
+fn modifiers(input: &mut &str) -> Result<(Option<Dynamic>, Option<Articulation>, Option<Crescendo>)> {
+    let mods: Vec<Modifier> = repeat(0.., modifier).parse_next(input)?;
+
+    let mut dynamic = None;
+    let mut articulation = None;
+    let mut crescendo = None;
+
+    for m in mods {
+        match m {
+            Modifier::Dynamic(d) => dynamic = Some(d),
+            Modifier::Articulation(a) => articulation = Some(a),
+            Modifier::Crescendo(a) => crescendo = Some(a),
+        }
+    }
+
+    Ok((dynamic, articulation, crescendo))
+}
+
 fn note(input: &mut &str) -> Result<Note> {
-    (pitch_class, accidental, octave, duration, dynamic)
+    (pitch_class, accidental, octave, opt(duration), modifiers)
         .context(Label("Note"))
         .parse_next(input)
-        .map(|(class, accidental, octave, duration, dynamic)| Note {
-            class,
-            accidental,
-            octave,
-            duration,
-            dynamic,
-        })
+        .map(
+            |(class, accidental, octave, duration, (dynamic, articulation, crescendo))| Note {
+                class,
+                accidental,
+                octave,
+                duration,
+                dynamic,
+                articulation,
+                crescendo,
+            },
+        )
 }
 
 fn event(input: &mut &str) -> Result<Event> {
@@ -144,9 +180,12 @@ fn discard(input: &mut &str) -> Result<()> {
 }
 
 fn part_discard(input: &mut &str) -> Result<()> {
-    repeat(0.., alt((multispace1.void(), comment.void(), bar_line, command.void())))
-        .context(Label("Discard (note)"))
-        .parse_next(input)
+    repeat(
+        0..,
+        alt((multispace1.void(), comment.void(), bar_line, command(alpha1).void())),
+    )
+    .context(Label("Discard (note)"))
+    .parse_next(input)
 }
 
 fn lexeme(input: &mut &str) -> Result<Event> {
@@ -171,18 +210,24 @@ where
     .context(Label("Variable"))
 }
 
-fn string_part<'a>(name: &'static str) -> impl Parser<&'a str, StringPart, ContextError> {
-    variable(name, events).context(Label(name)).map(|events| StringPart {
+fn string_part<'a>(name: &'static str) -> impl Parser<&'a str, LilyPart, ContextError> {
+    variable(name, events).context(Label(name)).map(|events| LilyPart {
         events,
         name: name.to_string(),
     })
 }
 
-fn tempo(input: &mut &str) -> Result<u32> {
-    preceded(
-        (discard, expect_command("tempo"), discard, "4", discard, "=", discard),
+fn tempo(input: &mut &str) -> Result<Tempo> {
+    seq!(
+        _: (discard, expect_command("tempo"), discard),
+        duration,
+        _: (discard, "=", discard),
         digit1.parse_to(),
     )
+    .map(|(duration, bpm)| Tempo {
+        note_duration: duration,
+        bpm,
+    })
     .context(Label("Tempo"))
     .parse_next(input)
 }
@@ -237,7 +282,7 @@ fn global(input: &mut &str) -> Result<Global> {
         .parse_next(input)
 }
 
-fn strings(input: &mut &str) -> Result<[StringPart; NUMBER_OF_STRINGS]> {
+fn strings(input: &mut &str) -> Result<[LilyPart; NUMBER_OF_STRINGS]> {
     Ok([
         string_part("stringOne").parse_next(input)?,
         string_part("stringTwo").parse_next(input)?,
@@ -248,15 +293,48 @@ fn strings(input: &mut &str) -> Result<[StringPart; NUMBER_OF_STRINGS]> {
     ])
 }
 
-pub fn score(input: &mut &str) -> Result<Score> {
+fn version(input: &mut &str) -> Result<()> {
     seq!(
+        discard,
+        expect_command("version"),
+        discard,
+        delimited('"', take_while(1.., |c: char| c.is_numeric() || c == '.'), '"').context(Label("Version Number"))
+    )
+    .void()
+    .context(Label("Version"))
+    .parse_next(input)
+}
+
+pub fn title(input: &mut &str) -> Result<String> {
+    preceded((discard, "title", discard, "=", discard), delimited('"', alpha1, '"'))
+        .context(Label("Title"))
+        .parse_next(input)
+        .map(|s| s.to_owned())
+}
+
+pub fn header(input: &mut &str) -> Result<Header> {
+    variable("header", opt(title))
+        .map(|title| Header { title })
+        .context(Label("Header"))
+        .parse_next(input)
+}
+
+pub fn score(input: &mut &str) -> Result<LilyScore> {
+    seq!(
+        _: opt(version),
+        _: discard,
+        opt(header),
         _: discard,
         global,
         strings,
         _: winnow::token::rest,
     )
     .context(Label("Score"))
-    .map(|(global, strings)| Score { global, strings })
+    .map(|(header, global, strings)| LilyScore {
+        header,
+        global,
+        parts: strings,
+    })
     .parse_next(input)
 }
 
@@ -268,11 +346,11 @@ fn parses_pitch_classes() {
 
 #[test]
 fn parses_accidentals() {
-    assert_eq!(accidental.parse(""), Ok(Accidental::Zero));
-    assert_eq!(accidental.parse("is"), Ok(Accidental::Plus1));
-    assert_eq!(accidental.parse("isis"), Ok(Accidental::Plus2));
-    assert_eq!(accidental.parse("es"), Ok(Accidental::Minus1));
-    assert_eq!(accidental.parse("eses"), Ok(Accidental::Minus2));
+    assert_eq!(accidental.parse(""), Ok(Accidental::None));
+    assert_eq!(accidental.parse("is"), Ok(Accidental::Sharp));
+    assert_eq!(accidental.parse("isis"), Ok(Accidental::DoubleSharp));
+    assert_eq!(accidental.parse("es"), Ok(Accidental::Flat));
+    assert_eq!(accidental.parse("eses"), Ok(Accidental::DoubleFlat));
 }
 
 #[test]
@@ -286,33 +364,67 @@ fn parses_octaves() {
 
 #[test]
 fn parses_duration() {
-    assert_eq!(duration.parse("4"), Ok(Some(4)));
-    assert_eq!(duration.parse("16"), Ok(Some(16)));
-    assert_eq!(duration.parse(""), Ok(None));
+    assert_eq!(
+        duration.parse("4"),
+        Ok(Duration {
+            ratio: 4,
+            augmentation: 0
+        })
+    );
+
+    assert_eq!(
+        duration.parse("16.."),
+        Ok(Duration {
+            ratio: 16,
+            augmentation: 2
+        })
+    );
 }
 
 #[test]
 fn parses_note() {
-    let note = note.parse("fis''8\\mf").unwrap();
+    let note = note.parse("fis''8.\\mf\\<").unwrap();
 
     assert_eq!(note.class, PitchClass::F);
-    assert_eq!(note.accidental, Accidental::Plus1);
+    assert_eq!(note.accidental, Accidental::Sharp);
     assert_eq!(note.octave, 2);
-    assert_eq!(note.duration, Some(8));
+    assert_eq!(
+        note.duration,
+        Some(Duration {
+            ratio: 8,
+            augmentation: 1
+        })
+    );
     assert_eq!(note.dynamic, Some(Dynamic::MF));
+    assert_eq!(note.crescendo, Some(Crescendo::CrescendoStart));
 }
 
 #[test]
 fn parses_rest() {
     let rest = rest.parse("r4\\p").unwrap();
 
-    assert_eq!(rest.duration, Some(4));
+    assert_eq!(
+        rest.duration,
+        Some(Duration {
+            ratio: 4,
+            augmentation: 0
+        })
+    );
     assert_eq!(rest.dynamic, Some(Dynamic::P));
 }
 
 #[test]
 fn parses_tempo() {
-    assert_eq!(tempo.parse("\\tempo 4 = 120"), Ok(120));
+    assert_eq!(
+        tempo.parse("\\tempo 4. = 120"),
+        Ok(Tempo {
+            note_duration: Duration {
+                ratio: 4,
+                augmentation: 1
+            },
+            bpm: 120
+        })
+    );
 }
 
 #[test]
@@ -353,7 +465,13 @@ fn parses_global_section() {
     assert_eq!(
         global,
         Global {
-            tempo: Some(120),
+            tempo: Some(Tempo {
+                note_duration: Duration {
+                    ratio: 4,
+                    augmentation: 0
+                },
+                bpm: 120
+            }),
             time: Some(TimeSignature {
                 numerator: 4,
                 denominator: 4,
@@ -369,9 +487,15 @@ fn parses_global_section() {
 #[test]
 fn parses_full_score() {
     let input = r#"
+        \version "2.26.0"
+
+        header = {
+            title = "title"
+        }
+
         global = {
             %comment
-            \tempo 4 = 90
+            \tempo 4.. = 90
             \time 3/4
             \key g \major
         }
@@ -380,7 +504,7 @@ fn parses_full_score() {
         %comment
         =
         {
-            c4 d4 e4 |
+            c4\mf-.\< d4\>-_\f e4 |
         }
 
         stringTwo = {
@@ -408,7 +532,17 @@ fn parses_full_score() {
 
     let score = score.parse(input).unwrap();
 
-    assert_eq!(score.global.tempo, Some(90));
+    assert_eq!(score.header.unwrap().title.unwrap(), "title");
+    assert_eq!(
+        score.global.tempo,
+        Some(Tempo {
+            note_duration: Duration {
+                ratio: 4,
+                augmentation: 2
+            },
+            bpm: 90
+        })
+    );
 
     assert_eq!(
         score.global.time,
@@ -426,19 +560,43 @@ fn parses_full_score() {
         })
     );
 
-    assert_eq!(score.strings.len(), 6);
+    assert_eq!(score.parts.len(), 6);
 
-    assert_eq!(score.strings[0].events.len(), 3);
-    assert_eq!(score.strings[1].events.len(), 3);
-    assert_eq!(score.strings[2].events.len(), 0);
-    assert_eq!(score.strings[3].events.len(), 2);
-    assert_eq!(score.strings[4].events.len(), 3);
-    assert_eq!(score.strings[5].events.len(), 3);
+    assert_eq!(score.parts[0].events.len(), 3);
+    assert_eq!(score.parts[1].events.len(), 3);
+    assert_eq!(score.parts[2].events.len(), 0);
+    assert_eq!(score.parts[3].events.len(), 2);
+    assert_eq!(score.parts[4].events.len(), 3);
+    assert_eq!(score.parts[5].events.len(), 3);
 
-    match &score.strings[4].events[0] {
+    match &score.parts[0].events[0] {
+        Event::Note(note) => {
+            assert_eq!(note.dynamic, Some(Dynamic::MF));
+            assert_eq!(note.articulation, Some(Articulation::Staccato));
+            assert_eq!(note.crescendo, Some(Crescendo::CrescendoStart));
+        }
+        _ => panic!("expected note"),
+    }
+
+    match &score.parts[0].events[1] {
+        Event::Note(note) => {
+            assert_eq!(note.dynamic, Some(Dynamic::F));
+            assert_eq!(note.articulation, Some(Articulation::Portato));
+            assert_eq!(note.crescendo, Some(Crescendo::DecrescendoStart));
+        }
+        _ => panic!("expected note"),
+    }
+
+    match &score.parts[4].events[0] {
         Event::Note(note) => {
             assert_eq!(note.class, PitchClass::E);
-            assert_eq!(note.duration, Some(4));
+            assert_eq!(
+                note.duration,
+                Some(Duration {
+                    ratio: 4,
+                    augmentation: 0
+                })
+            );
             assert_eq!(note.dynamic, Some(Dynamic::MF));
         }
         _ => panic!("expected note"),

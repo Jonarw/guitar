@@ -1,32 +1,44 @@
 pub const NUMBER_OF_STRINGS: usize = 6;
 
 #[derive(Debug)]
-pub struct Score {
+pub struct LilyScore {
+    pub header: Option<Header>,
     pub global: Global,
-    pub strings: [StringPart; NUMBER_OF_STRINGS],
+    pub parts: [LilyPart; NUMBER_OF_STRINGS],
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Global {
-    pub tempo: Option<u32>,
+    pub tempo: Option<Tempo>,
     pub time: Option<TimeSignature>,
     pub key: Option<Key>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct Tempo {
+    pub note_duration: NoteDuration,
+    pub bpm: u16,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Header {
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeSignature {
     pub numerator: u8,
     pub denominator: u8,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Key {
     pub tonic: PitchClass,
     pub major: bool,
 }
 
 #[derive(Debug)]
-pub struct StringPart {
+pub struct LilyPart {
     pub name: String,
     pub events: Vec<Event>,
 }
@@ -37,32 +49,55 @@ pub enum Event {
     Rest(Rest),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoteDuration {
+    pub ratio: u16,
+    pub augmentation: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct Note {
     pub class: PitchClass,
     pub accidental: Accidental,
     pub octave: i8,
-    pub duration: Option<u32>,
+    pub duration: Option<NoteDuration>,
     pub dynamic: Option<Dynamic>,
+    pub articulation: Option<Articulation>,
+    pub crescendo: Option<Crescendo>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Rest {
-    pub duration: Option<u32>,
+    pub duration: Option<NoteDuration>,
     pub dynamic: Option<Dynamic>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Accidental {
-    Minus2,
-    Minus1,
-    #[default]
-    Zero,
-    Plus1,
-    Plus2,
+    DoubleFlat,
+    Flat,
+    None,
+    Sharp,
+    DoubleSharp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Articulation {
+    Tenuto,
+    Portato,
+    Staccato,
+    Staccatissimo,
+    Marcato,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Crescendo {
+    CrescendoStart,
+    DecrescendoStart,
+    End,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dynamic {
     PPP,
     PP,
@@ -72,12 +107,9 @@ pub enum Dynamic {
     F,
     FF,
     FFF,
-    CrescendoStart,
-    DecrescendoStart,
-    CrescendoEnd,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PitchClass {
     C,
     D,
