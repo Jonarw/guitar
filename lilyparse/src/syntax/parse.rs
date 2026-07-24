@@ -60,7 +60,11 @@ fn octave(input: &mut &str) -> Result<i8> {
 fn duration(input: &mut &str) -> Result<NoteDuration> {
     (digit1.parse_to(), repeat(0.., '.').fold(|| 0, |i, _| i + 1))
         .context(Label("Duration"))
-        .map(|(ratio, augmentation)| NoteDuration { ratio, augmentation })
+        .map(|(ratio, augmentation)| NoteDuration {
+            ratio,
+            augmentation,
+            tuplet: None,
+        })
         .parse_next(input)
 }
 
@@ -101,10 +105,15 @@ fn crescendo(input: &mut &str) -> Result<Crescendo> {
 }
 
 fn rest(input: &mut &str) -> Result<Rest> {
-    preceded('r', (opt(duration), opt(dynamic)))
+    preceded('r', (opt(duration), modifiers))
         .context(Label("Rest"))
         .parse_next(input)
-        .map(|(duration, dynamic)| Rest { duration, dynamic })
+        .map(|(duration, (dynamic, articulation, crescendo))| Rest {
+            duration,
+            dynamic,
+            articulation,
+            crescendo,
+        })
 }
 
 enum Modifier {
@@ -158,9 +167,14 @@ fn note(input: &mut &str) -> Result<Note> {
 }
 
 fn event(input: &mut &str) -> Result<Event> {
-    alt((rest.map(Event::Rest), note.map(Event::Note)))
-        .context(Label("Event"))
-        .parse_next(input)
+    alt((
+        rest.map(Event::Rest),
+        note.map(Event::Note),
+        tempo.map(Event::Tempo),
+        time.map(Event::TimeSignature),
+    ))
+    .context(Label("Event"))
+    .parse_next(input)
 }
 
 fn comment<'s>(input: &mut &'s str) -> Result<&'s str> {
@@ -182,7 +196,12 @@ fn discard(input: &mut &str) -> Result<()> {
 fn part_discard(input: &mut &str) -> Result<()> {
     repeat(
         0..,
-        alt((multispace1.void(), comment.void(), bar_line, command(alpha1).void())),
+        alt((
+            multispace1.void(),
+            comment.void(),
+            bar_line,
+            expect_command("global").void(),
+        )),
     )
     .context(Label("Discard (note)"))
     .parse_next(input)
@@ -276,9 +295,9 @@ fn key(input: &mut &str) -> Result<Key> {
 }
 
 fn global(input: &mut &str) -> Result<Global> {
-    variable("global", (opt(tempo), opt(time), opt(key)))
+    variable("global", opt(key))
         .context(Label("'Global' variable"))
-        .map(|(tempo, time, key)| Global { tempo, time, key })
+        .map(|key| Global { key })
         .parse_next(input)
 }
 
@@ -366,17 +385,19 @@ fn parses_octaves() {
 fn parses_duration() {
     assert_eq!(
         duration.parse("4"),
-        Ok(Duration {
+        Ok(NoteDuration {
             ratio: 4,
-            augmentation: 0
+            augmentation: 0,
+            tuplet: None,
         })
     );
 
     assert_eq!(
         duration.parse("16.."),
-        Ok(Duration {
+        Ok(NoteDuration {
             ratio: 16,
-            augmentation: 2
+            augmentation: 2,
+            tuplet: None,
         })
     );
 }
@@ -390,9 +411,10 @@ fn parses_note() {
     assert_eq!(note.octave, 2);
     assert_eq!(
         note.duration,
-        Some(Duration {
+        Some(NoteDuration {
             ratio: 8,
-            augmentation: 1
+            augmentation: 1,
+            tuplet: None,
         })
     );
     assert_eq!(note.dynamic, Some(Dynamic::MF));
@@ -405,9 +427,10 @@ fn parses_rest() {
 
     assert_eq!(
         rest.duration,
-        Some(Duration {
+        Some(NoteDuration {
             ratio: 4,
-            augmentation: 0
+            augmentation: 0,
+            tuplet: None,
         })
     );
     assert_eq!(rest.dynamic, Some(Dynamic::P));
@@ -418,9 +441,10 @@ fn parses_tempo() {
     assert_eq!(
         tempo.parse("\\tempo 4. = 120"),
         Ok(Tempo {
-            note_duration: Duration {
+            note_duration: NoteDuration {
                 ratio: 4,
-                augmentation: 1
+                augmentation: 1,
+                tuplet: None,
             },
             bpm: 120
         })
@@ -455,8 +479,6 @@ fn parses_events() {
 fn parses_global_section() {
     let input = r#"
         global = {
-            \tempo 4 = 120
-            \time 4/4
             \key c \major
         }"#;
 
@@ -465,17 +487,6 @@ fn parses_global_section() {
     assert_eq!(
         global,
         Global {
-            tempo: Some(Tempo {
-                note_duration: Duration {
-                    ratio: 4,
-                    augmentation: 0
-                },
-                bpm: 120
-            }),
-            time: Some(TimeSignature {
-                numerator: 4,
-                denominator: 4,
-            }),
             key: Some(Key {
                 tonic: PitchClass::C,
                 major: true,
@@ -495,8 +506,6 @@ fn parses_full_score() {
 
         global = {
             %comment
-            \tempo 4.. = 90
-            \time 3/4
             \key g \major
         }
 
@@ -504,6 +513,8 @@ fn parses_full_score() {
         %comment
         =
         {
+            \tempo 4.. = 90
+            \time 3/4
             c4\mf-.\< d4\>-_\f e4 |
         }
 
@@ -533,24 +544,6 @@ fn parses_full_score() {
     let score = score.parse(input).unwrap();
 
     assert_eq!(score.header.unwrap().title.unwrap(), "title");
-    assert_eq!(
-        score.global.tempo,
-        Some(Tempo {
-            note_duration: Duration {
-                ratio: 4,
-                augmentation: 2
-            },
-            bpm: 90
-        })
-    );
-
-    assert_eq!(
-        score.global.time,
-        Some(TimeSignature {
-            numerator: 3,
-            denominator: 4,
-        })
-    );
 
     assert_eq!(
         score.global.key,
@@ -562,7 +555,7 @@ fn parses_full_score() {
 
     assert_eq!(score.parts.len(), 6);
 
-    assert_eq!(score.parts[0].events.len(), 3);
+    assert_eq!(score.parts[0].events.len(), 5);
     assert_eq!(score.parts[1].events.len(), 3);
     assert_eq!(score.parts[2].events.len(), 0);
     assert_eq!(score.parts[3].events.len(), 2);
@@ -570,6 +563,31 @@ fn parses_full_score() {
     assert_eq!(score.parts[5].events.len(), 3);
 
     match &score.parts[0].events[0] {
+        Event::Tempo(tempo) => {
+            assert_eq!(
+                *tempo,
+                Tempo {
+                    note_duration: NoteDuration {
+                        ratio: 4,
+                        augmentation: 2,
+                        tuplet: None,
+                    },
+                    bpm: 90
+                }
+            );
+        }
+        _ => panic!("expected note"),
+    }
+
+    match &score.parts[0].events[1] {
+        Event::TimeSignature(time_signature) => {
+            assert_eq!(time_signature.numerator, 3);
+            assert_eq!(time_signature.denominator, 4);
+        }
+        _ => panic!("expected note"),
+    }
+
+    match &score.parts[0].events[2] {
         Event::Note(note) => {
             assert_eq!(note.dynamic, Some(Dynamic::MF));
             assert_eq!(note.articulation, Some(Articulation::Staccato));
@@ -578,7 +596,7 @@ fn parses_full_score() {
         _ => panic!("expected note"),
     }
 
-    match &score.parts[0].events[1] {
+    match &score.parts[0].events[3] {
         Event::Note(note) => {
             assert_eq!(note.dynamic, Some(Dynamic::F));
             assert_eq!(note.articulation, Some(Articulation::Portato));
@@ -592,9 +610,10 @@ fn parses_full_score() {
             assert_eq!(note.class, PitchClass::E);
             assert_eq!(
                 note.duration,
-                Some(Duration {
+                Some(NoteDuration {
                     ratio: 4,
-                    augmentation: 0
+                    augmentation: 0,
+                    tuplet: None,
                 })
             );
             assert_eq!(note.dynamic, Some(Dynamic::MF));

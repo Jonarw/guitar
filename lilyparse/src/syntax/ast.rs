@@ -9,15 +9,22 @@ pub struct LilyScore {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Global {
-    pub tempo: Option<Tempo>,
-    pub time: Option<TimeSignature>,
     pub key: Option<Key>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Tempo {
     pub note_duration: NoteDuration,
     pub bpm: u16,
+}
+
+impl Default for Tempo {
+    fn default() -> Self {
+        Self {
+            note_duration: NoteDuration::default(),
+            bpm: 90,
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -29,6 +36,15 @@ pub struct Header {
 pub struct TimeSignature {
     pub numerator: u8,
     pub denominator: u8,
+}
+
+impl Default for TimeSignature {
+    fn default() -> Self {
+        Self {
+            numerator: 4,
+            denominator: 4,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,12 +63,31 @@ pub struct LilyPart {
 pub enum Event {
     Note(Note),
     Rest(Rest),
+    TimeSignature(TimeSignature),
+    Tempo(Tempo),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tuplet {
+    pub num: u8,
+    pub den: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoteDuration {
     pub ratio: u16,
     pub augmentation: u8,
+    pub tuplet: Option<Tuplet>,
+}
+
+impl Default for NoteDuration {
+    fn default() -> Self {
+        Self {
+            ratio: 4,
+            augmentation: 0,
+            tuplet: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +105,8 @@ pub struct Note {
 pub struct Rest {
     pub duration: Option<NoteDuration>,
     pub dynamic: Option<Dynamic>,
+    pub articulation: Option<Articulation>,
+    pub crescendo: Option<Crescendo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
