@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    fs::FileTimes,
     matches,
     ops::{Add, AddAssign, Sub},
     panic,
@@ -7,7 +8,7 @@ use std::{
     todo,
 };
 
-use fraction::{GenericFraction, One};
+use fraction::{GenericFraction, One, Zero};
 use itertools::Itertools;
 use lilyparse::syntax::ast::{
     self, Articulation, Crescendo, Dynamic, Event, LilyPart, LilyScore, NoteDuration, Rest, Tempo, TimeSignature,
@@ -366,62 +367,32 @@ impl<'a> LilyPartConverter<'a> {
     }
 }
 
-type FractionType = GenericFraction<u32>;
+type Fraction = GenericFraction<u32>;
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
-struct MusicalDuration {
-    fraction: FractionType,
+fn note_duration_to_fraction(note_duration: NoteDuration) -> Fraction {
+    let mut fraction = Fraction::new(
+        note_duration.ratio << (note_duration.augmentation - 1) - 1,
+        note_duration.ratio << note_duration.augmentation,
+    );
+
+    if let Some(tuplet) = note_duration.tuplet {
+        fraction /= Fraction::new(tuplet.num, tuplet.den)
+    }
+
+    fraction
 }
 
-impl Default for MusicalDuration {
-    fn default() -> Self {
-        Self {
-            fraction: Default::default(),
-        }
-    }
+fn time_signature_to_fraction(time_signature: TimeSignature) -> Fraction {
+    Fraction::new(time_signature.numerator, time_signature.denominator)
 }
 
-impl MusicalDuration {
-    pub fn new(fraction: FractionType) -> Self {
-        Self { fraction }
-    }
-}
+fn tempo_to_fraction(tempo: Tempo) -> Fraction {
+    let beat = note_duration_to_fraction(tempo.note_duration);
+    let whole_notes_per_minute = Fraction::from(tempo.bpm) * beat;
+    let whole_notes_per_second = Fraction::from(60) * whole_notes_per_minute;
 
-impl Add for MusicalDuration {
-    type Output = MusicalDuration;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        MusicalDuration::new(self.fraction + rhs.fraction)
-    }
-}
-
-impl AddAssign for MusicalDuration {
-    fn add_assign(&mut self, rhs: Self) {
-        *self = *self + rhs;
-    }
-}
-
-impl Sub for MusicalDuration {
-    type Output = MusicalDuration;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        MusicalDuration::new(self.fraction - rhs.fraction)
-    }
-}
-
-impl From<NoteDuration> for MusicalDuration {
-    fn from(value: NoteDuration) -> Self {
-        let mut fraction = FractionType::new(
-            value.ratio << (value.augmentation - 1) - 1,
-            value.ratio << value.augmentation,
-        );
-
-        if let Some(tuplet) = value.tuplet {
-            fraction /= FractionType::new(tuplet.num, tuplet.den)
-        }
-
-        MusicalDuration::new(fraction)
-    }
+    // result in seconds per whole note
+    whole_notes_per_second.recip()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -431,54 +402,82 @@ pub enum TimingEvent {
 }
 
 struct TimingHelper {
-    timing_events: Vec<(MusicalDuration, TimingEvent)>,
+    timing_events: Vec<(Fraction, TimingEvent)>,
 }
 
 struct NoteTimingInfo {
-    time: Duration,
+    time: Fraction,
     time_signature: TimeSignature,
     bar_number: u32,
-    position_in_bar: MusicalDuration,
+    position_in_bar: Fraction,
+    tempo: Tempo,
 }
 
 impl TimingHelper {
-    pub fn get_timing_info(&self, md: MusicalDuration) -> NoteTimingInfo {
+    pub fn get_timing_info(&self, input: Fraction) -> NoteTimingInfo {
         let mut tempo = Tempo::default();
+        let mut tempo_fraction = tempo_to_fraction(tempo); // seconds per w
+        let mut time = Fraction::zero(); // seconds
         let mut time_signature = TimeSignature::default();
-        let mut time = Duration::default();
-        let mut musical_time = MusicalDuration::default();
-        let mut number_of_bars = 0;
+        let mut time_signature_fraction = time_signature_to_fraction(time_signature); // w
+        let mut time_since_start = Fraction::zero(); // w
+        let mut number_of_bars = Fraction::zero();
+        let mut position_in_bar = Fraction::zero(); // w
 
         for (md, event) in self.timing_events.iter() {
-            let delta = *md - musical_time;
-            
+            if time_since_start >= input {
+                let delta = input - time_since_start;
+                number_of_bars += delta / time_signature_fraction;
+                position_in_bar = (position_in_bar + delta) % time_signature_fraction;
+                break;
+            }
+
+            let delta = md - time_since_start; // w
+            number_of_bars += delta / time_signature_fraction;
+            position_in_bar = (position_in_bar + delta) % time_signature_fraction;
+            time += delta * tempo_fraction;
+            time_since_start = *md;
 
             match event {
-                TimingEvent::TimeSignature(time_signature) => todo!(),
-                TimingEvent::Tempo(tempo) => todo!(),
+                TimingEvent::TimeSignature(ts) => {
+                    if position_in_bar != Fraction::zero() {
+                        panic!("Unaligned time signature change");
+                    }
+
+                    time_signature = *ts;
+                    time_signature_fraction = time_signature_to_fraction(time_signature);
+                }
+                TimingEvent::Tempo(t) => {
+                    tempo = *t;
+                    tempo_fraction = tempo_to_fraction(tempo)
+                }
             }
         }
 
-        todo!()
+        NoteTimingInfo {
+            time,
+            time_signature,
+            bar_number: *number_of_bars.trunc().numer().unwrap(),
+            position_in_bar,
+            tempo,
+        }
     }
-}
 
-impl MachineScore {
-    fn extract_timing(score: &LilyScore) -> Vec<(MusicalDuration, TimingEvent)> {
+    fn extract_timing(score: &LilyScore) -> Vec<(Fraction, TimingEvent)> {
         let mut ret: Vec<_> = score
             .parts
             .iter()
             .flat_map(|p| {
                 let mut ret = Vec::new();
-                let mut time = MusicalDuration::default();
+                let mut time = Fraction::default();
                 let mut current_duration = NoteDuration::default();
 
-                let advance = |time: &mut MusicalDuration, current_duration: &mut NoteDuration, opt_duration| {
+                let advance = |time: &mut Fraction, current_duration: &mut NoteDuration, opt_duration| {
                     if let Some(d) = opt_duration {
                         *current_duration = d;
                     }
 
-                    *time += (*current_duration).into();
+                    *time += note_duration_to_fraction(*current_duration);
                 };
 
                 for event in p.events.iter() {
@@ -502,14 +501,23 @@ impl MachineScore {
         ret
     }
 
+    pub fn from_score(score: &LilyScore) -> Self {
+        Self {
+            timing_events: Self::extract_timing(score),
+        }
+    }
+}
+
+impl MachineScore {
     pub fn from_lilyscore(score: LilyScore) -> Self {
         let mut score_title = "".to_owned();
-        if let Some(header) = score.header
-            && let Some(title) = header.title
+        if let Some(header) = &score.header
+            && let Some(title) = &header.title
         {
-            score_title = title;
+            score_title = title.clone();
         }
 
+        let timing_helper = TimingHelper::from_score(&score);
         let parts = score.parts.map(|p| LilyPartConverter::new(&p).convert());
 
         Self {
