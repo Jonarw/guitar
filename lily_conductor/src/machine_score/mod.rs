@@ -1,18 +1,12 @@
-use std::{
-    cmp::Ordering,
-    fs::FileTimes,
-    matches,
-    ops::{Add, AddAssign, Sub},
-    panic,
-    time::Duration,
-    todo,
-};
+use std::{matches, panic, time::Duration};
 
-use fraction::{GenericFraction, One, Zero};
-use itertools::Itertools;
 use lilyparse::syntax::ast::{
-    self, Articulation, Crescendo, Dynamic, Event, LilyPart, LilyScore, NoteDuration, Rest, Tempo, TimeSignature,
+    self, Articulation, Crescendo, Dynamic, Event, LilyPart, LilyScore, NoteDuration, Rest, Tempo,
 };
+use timing::TimingHelper;
+
+pub mod dynamic;
+pub mod timing;
 
 pub struct MidiPitch {
     pitch: u8,
@@ -36,7 +30,7 @@ impl MidiVolume {
     const MAX_VALUE: u8 = 127;
     pub fn new(volume: u8) -> Self {
         if volume > Self::MAX_VALUE {
-            panic!("MIDI pitch outside of allowed range");
+            panic!("MIDI volume outside of allowed range");
         }
 
         Self { volume }
@@ -78,15 +72,9 @@ pub struct MachineScorePart {
     notes: Vec<Note>,
 }
 
-struct CrescendoBlock {
-    start_time: Duration,
-    end_time: Duration,
-    start_dynamic: Dynamic,
-    end_dynamic: Dynamic,
-}
-
 struct LilyPartConverter<'a> {
     lily_part: &'a LilyPart,
+    timing_helper: TimingHelper,
     notes: Vec<Note>,
     time: Duration,
     note_duration: NoteDuration,
@@ -94,37 +82,22 @@ struct LilyPartConverter<'a> {
     crescendo: Option<CrescendoBlock>,
     articulation: Articulation,
     event_index: usize,
-    time_signature: TimeSignature,
-    tempo: Tempo,
     position_in_bar: f64,
 }
 
 impl<'a> LilyPartConverter<'a> {
-    pub fn new(lily_part: &'a LilyPart) -> Self {
+    pub fn new(lily_part: &'a LilyPart, timing_helper: TimingHelper) -> Self {
         Self {
             lily_part,
+            timing_helper,
             notes: Vec::new(),
             time: Duration::default(),
-            note_duration: NoteDuration {
-                ratio: 4,
-                augmentation: 0,
-            },
+            note_duration: NoteDuration::default(),
             dynamic: Dynamic::MF,
             crescendo: None,
             articulation: Articulation::Portato,
             event_index: 0,
-            tempo: Tempo {
-                note_duration: NoteDuration {
-                    ratio: 4,
-                    augmentation: 0,
-                },
-                bpm: 90,
-            },
             position_in_bar: 0.0,
-            time_signature: TimeSignature {
-                numerator: 4,
-                denominator: 4,
-            },
         }
     }
 
@@ -363,147 +336,6 @@ impl<'a> LilyPartConverter<'a> {
         MachineScorePart {
             name: self.lily_part.name.clone(),
             notes: self.notes,
-        }
-    }
-}
-
-type Fraction = GenericFraction<u32>;
-
-fn note_duration_to_fraction(note_duration: NoteDuration) -> Fraction {
-    let mut fraction = Fraction::new(
-        note_duration.ratio << (note_duration.augmentation - 1) - 1,
-        note_duration.ratio << note_duration.augmentation,
-    );
-
-    if let Some(tuplet) = note_duration.tuplet {
-        fraction /= Fraction::new(tuplet.num, tuplet.den)
-    }
-
-    fraction
-}
-
-fn time_signature_to_fraction(time_signature: TimeSignature) -> Fraction {
-    Fraction::new(time_signature.numerator, time_signature.denominator)
-}
-
-fn tempo_to_fraction(tempo: Tempo) -> Fraction {
-    let beat = note_duration_to_fraction(tempo.note_duration);
-    let whole_notes_per_minute = Fraction::from(tempo.bpm) * beat;
-    let whole_notes_per_second = Fraction::from(60) * whole_notes_per_minute;
-
-    // result in seconds per whole note
-    whole_notes_per_second.recip()
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum TimingEvent {
-    TimeSignature(TimeSignature),
-    Tempo(Tempo),
-}
-
-struct TimingHelper {
-    timing_events: Vec<(Fraction, TimingEvent)>,
-}
-
-struct NoteTimingInfo {
-    time: Fraction,
-    time_signature: TimeSignature,
-    bar_number: u32,
-    position_in_bar: Fraction,
-    tempo: Tempo,
-}
-
-impl TimingHelper {
-    pub fn get_timing_info(&self, input: Fraction) -> NoteTimingInfo {
-        let mut tempo = Tempo::default();
-        let mut tempo_fraction = tempo_to_fraction(tempo); // seconds per w
-        let mut time = Fraction::zero(); // seconds
-        let mut time_signature = TimeSignature::default();
-        let mut time_signature_fraction = time_signature_to_fraction(time_signature); // w
-        let mut time_since_start = Fraction::zero(); // w
-        let mut number_of_bars = Fraction::zero();
-        let mut position_in_bar = Fraction::zero(); // w
-
-        for (md, event) in self.timing_events.iter() {
-            if time_since_start >= input {
-                let delta = input - time_since_start;
-                number_of_bars += delta / time_signature_fraction;
-                position_in_bar = (position_in_bar + delta) % time_signature_fraction;
-                break;
-            }
-
-            let delta = md - time_since_start; // w
-            number_of_bars += delta / time_signature_fraction;
-            position_in_bar = (position_in_bar + delta) % time_signature_fraction;
-            time += delta * tempo_fraction;
-            time_since_start = *md;
-
-            match event {
-                TimingEvent::TimeSignature(ts) => {
-                    if position_in_bar != Fraction::zero() {
-                        panic!("Unaligned time signature change");
-                    }
-
-                    time_signature = *ts;
-                    time_signature_fraction = time_signature_to_fraction(time_signature);
-                }
-                TimingEvent::Tempo(t) => {
-                    tempo = *t;
-                    tempo_fraction = tempo_to_fraction(tempo)
-                }
-            }
-        }
-
-        NoteTimingInfo {
-            time,
-            time_signature,
-            bar_number: *number_of_bars.trunc().numer().unwrap(),
-            position_in_bar,
-            tempo,
-        }
-    }
-
-    fn extract_timing(score: &LilyScore) -> Vec<(Fraction, TimingEvent)> {
-        let mut ret: Vec<_> = score
-            .parts
-            .iter()
-            .flat_map(|p| {
-                let mut ret = Vec::new();
-                let mut time = Fraction::default();
-                let mut current_duration = NoteDuration::default();
-
-                let advance = |time: &mut Fraction, current_duration: &mut NoteDuration, opt_duration| {
-                    if let Some(d) = opt_duration {
-                        *current_duration = d;
-                    }
-
-                    *time += note_duration_to_fraction(*current_duration);
-                };
-
-                for event in p.events.iter() {
-                    match event {
-                        Event::Note(note) => advance(&mut time, &mut current_duration, note.duration),
-                        Event::Rest(rest) => advance(&mut time, &mut current_duration, rest.duration),
-                        Event::TimeSignature(time_signature) => {
-                            ret.push((time, TimingEvent::TimeSignature(*time_signature)))
-                        }
-                        Event::Tempo(tempo) => ret.push((time, TimingEvent::Tempo(*tempo))),
-                    }
-                }
-
-                ret
-            })
-            .into_iter()
-            .collect();
-
-        ret.sort_unstable_by_key(|t| t.0);
-        ret.dedup();
-        ret
-    }
-
-    pub fn from_score(score: &LilyScore) -> Self {
-        Self {
-            timing_events: Self::extract_timing(score),
         }
     }
 }

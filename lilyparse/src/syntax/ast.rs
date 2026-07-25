@@ -59,7 +59,7 @@ pub struct LilyPart {
     pub events: Vec<Event>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Event {
     Note(Note),
     Rest(Rest),
