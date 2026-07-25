@@ -134,12 +134,13 @@ pub enum Crescendo {
     End,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Dynamic {
     PPP,
     PP,
     P,
     MP,
+    #[default]
     MF,
     F,
     FF,

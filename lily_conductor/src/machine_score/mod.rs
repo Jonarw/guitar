@@ -5,6 +5,8 @@ use lilyparse::syntax::ast::{
 };
 use timing::TimingHelper;
 
+use crate::machine_score::timing::Notes;
+
 pub mod dynamic;
 pub mod timing;
 
@@ -50,8 +52,8 @@ impl MidiVolume {
 pub struct Note {
     pub pitch: MidiPitch,
     pub volume: MidiVolume,
-    pub duration: Duration,
-    pub start: Duration,
+    pub duration: Notes,
+    pub start: Notes,
     pub pluck_technique: PluckTechnique,
     pub finger_slap: bool,
 }
@@ -179,19 +181,6 @@ impl<'a> LilyPartConverter<'a> {
             (Crescendo::DecrescendoStart, Dynamic::FF) => Dynamic::F,
             (Crescendo::DecrescendoStart, Dynamic::FFF) => Dynamic::FF,
             (Crescendo::End, _) => self.dynamic,
-        }
-    }
-
-    fn dynamic_to_volume(dynamic: Dynamic) -> f64 {
-        match dynamic {
-            Dynamic::PPP => 1.0 / 8.0,
-            Dynamic::PP => 2.0 / 8.0,
-            Dynamic::P => 3.0 / 8.0,
-            Dynamic::MP => 4.0 / 8.0,
-            Dynamic::MF => 5.0 / 8.0,
-            Dynamic::F => 6.0 / 8.0,
-            Dynamic::FF => 7.0 / 8.0,
-            Dynamic::FFF => 8.0 / 8.0,
         }
     }
 

@@ -80,6 +80,7 @@ impl TimingHelper {
             let (note_stamp, time_signature) = self.time_signature_changes[self.time_signature_index];
             if note_stamp <= self.note_stamp {
                 self.next_time_signature(time_signature);
+                self.time_signature_index += 1;
             }
         }
     }
@@ -117,7 +118,7 @@ impl TimingHelper {
         self.time_signature = time_signature;
     }
 
-    fn get_timed_events(part: LilyPart) -> Vec<TimedEvent> {
+    pub fn get_timed_events(part: &LilyPart) -> Vec<TimedEvent> {
         let mut time = Notes::default();
         let mut current_duration = NoteDuration::default();
         let mut ret = Vec::new();
@@ -157,26 +158,12 @@ impl TimingHelper {
         let mut time_signature_changes = Vec::new();
 
         for part in &score.parts {
-            let mut time = Notes::default();
-            let mut current_duration = NoteDuration::default();
-            for event in part.events.iter() {
+            let timed_events = Self::get_timed_events(part);
+            for TimedEvent { event, note_stamp } in timed_events.iter() {
                 match event {
-                    Event::Note(note) => {
-                        if let Some(nd) = note.duration {
-                            current_duration = nd;
-                        }
-
-                        time += note_duration_to_notes(current_duration);
-                    }
-                    Event::Rest(rest) => {
-                        if let Some(nd) = rest.duration {
-                            current_duration = nd;
-                        }
-
-                        time += note_duration_to_notes(current_duration);
-                    }
-                    Event::TimeSignature(time_signature) => time_signature_changes.push((time, *time_signature)),
-                    Event::Tempo(tempo) => tempo_changes.push((time, *tempo)),
+                    Event::TimeSignature(time_signature) => time_signature_changes.push((*note_stamp, *time_signature)),
+                    Event::Tempo(tempo) => tempo_changes.push((*note_stamp, *tempo)),
+                    _ => {}
                 }
             }
         }
