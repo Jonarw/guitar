@@ -50,6 +50,10 @@ fn articulation(input: &mut &str) -> Result<Articulation> {
     .parse_next(input)
 }
 
+fn tie(input: &mut &str) -> Result<()> {
+    '~'.void().parse_next(input)
+}
+
 fn octave(input: &mut &str) -> Result<i8> {
     repeat(0.., alt(('\''.value(1), ','.value(-1))))
         .fold(|| 0, |acc, item| acc + item)
@@ -104,15 +108,29 @@ fn crescendo(input: &mut &str) -> Result<Crescendo> {
     .parse_next(input)
 }
 
+fn rest_multiplier(input: &mut &str) -> Result<RestMultiplier> {
+    (preceded('*', digit1.parse_to()), opt(preceded('/', digit1.parse_to())))
+        .map(|(num, den)| {
+            let den = den.unwrap_or(1);
+            RestMultiplier { num, den }
+        })
+        .parse_next(input)
+}
+
+fn rest_duration(input: &mut &str) -> Result<(NoteDuration, Option<RestMultiplier>)> {
+    (duration, opt(rest_multiplier)).parse_next(input)
+}
+
 fn rest(input: &mut &str) -> Result<Rest> {
-    preceded('r', (opt(duration), modifiers))
+    preceded(alt(('r', 'R')), (opt(rest_duration), modifiers))
         .context(Label("Rest"))
         .parse_next(input)
-        .map(|(duration, (dynamic, articulation, crescendo))| Rest {
-            duration,
+        .map(|(rest_duration, (dynamic, articulation, crescendo, _))| Rest {
+            duration: rest_duration.map(|rd| rd.0),
             dynamic,
             articulation,
             crescendo,
+            multiplier: rest_duration.map(|rd| rd.1).flatten(),
         })
 }
 
@@ -120,6 +138,7 @@ enum Modifier {
     Dynamic(Dynamic),
     Articulation(Articulation),
     Crescendo(Crescendo),
+    Tie,
 }
 
 fn modifier(input: &mut &str) -> Result<Modifier> {
@@ -127,26 +146,29 @@ fn modifier(input: &mut &str) -> Result<Modifier> {
         dynamic.map(Modifier::Dynamic),
         articulation.map(Modifier::Articulation),
         crescendo.map(Modifier::Crescendo),
+        tie.map(|()| Modifier::Tie),
     ))
     .parse_next(input)
 }
 
-fn modifiers(input: &mut &str) -> Result<(Option<Dynamic>, Option<Articulation>, Option<Crescendo>)> {
+fn modifiers(input: &mut &str) -> Result<(Option<Dynamic>, Option<Articulation>, Option<Crescendo>, bool)> {
     let mods: Vec<Modifier> = repeat(0.., modifier).parse_next(input)?;
 
     let mut dynamic = None;
     let mut articulation = None;
     let mut crescendo = None;
+    let mut tie = false;
 
     for m in mods {
         match m {
             Modifier::Dynamic(d) => dynamic = Some(d),
             Modifier::Articulation(a) => articulation = Some(a),
             Modifier::Crescendo(a) => crescendo = Some(a),
+            Modifier::Tie => tie = true,
         }
     }
 
-    Ok((dynamic, articulation, crescendo))
+    Ok((dynamic, articulation, crescendo, tie))
 }
 
 fn note(input: &mut &str) -> Result<Note> {
@@ -154,7 +176,7 @@ fn note(input: &mut &str) -> Result<Note> {
         .context(Label("Note"))
         .parse_next(input)
         .map(
-            |(class, accidental, octave, duration, (dynamic, articulation, crescendo))| Note {
+            |(class, accidental, octave, duration, (dynamic, articulation, crescendo, tie))| Note {
                 class,
                 accidental,
                 octave,
@@ -162,6 +184,7 @@ fn note(input: &mut &str) -> Result<Note> {
                 dynamic,
                 articulation,
                 crescendo,
+                tie,
             },
         )
 }

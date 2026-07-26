@@ -66,16 +66,8 @@ pub struct NoteTimingInfo {
 }
 
 impl TimingHelper {
-    /// Advances timeline state using LilyPond carry-forward duration semantics.
-    fn advance(&mut self, note_duration: Option<NoteDuration>) {
-        if let Some(note_duration) = note_duration {
-            self.note_length = note_duration_to_notes(note_duration);
-        }
-
-        self.note_stamp += self.note_length;
-        self.number_of_bars += self.note_length / self.bar_length;
-        self.position_in_bar = (self.position_in_bar + self.note_length) % self.bar_length;
-
+    /// Applies any time-signature changes scheduled for the current note stamp.
+    fn apply_pending_time_signature_changes(&mut self) {
         while self.time_signature_changes.len() > self.time_signature_index {
             let (note_stamp, time_signature) = self.time_signature_changes[self.time_signature_index];
             if note_stamp <= self.note_stamp {
@@ -87,6 +79,24 @@ impl TimingHelper {
         }
     }
 
+    /// Advances timeline state using LilyPond carry-forward duration semantics.
+    fn advance_by(&mut self, amount: Notes) {
+        self.note_stamp += amount;
+        self.number_of_bars += amount / self.bar_length;
+        self.position_in_bar = (self.position_in_bar + amount) % self.bar_length;
+
+        self.apply_pending_time_signature_changes();
+    }
+
+    /// Advances timeline state using LilyPond carry-forward duration semantics.
+    fn advance(&mut self, note_duration: Option<NoteDuration>) {
+        if let Some(note_duration) = note_duration {
+            self.note_length = note_duration_to_notes(note_duration);
+        }
+
+        self.advance_by(self.note_length);
+    }
+
     /// Resets helper state so it can be reused for another part traversal.
     pub fn reset(&mut self) {
         self.time_signature_index = 0;
@@ -96,11 +106,23 @@ impl TimingHelper {
         self.time_signature = TimeSignature::default();
         self.bar_length = time_signature_to_bar_length(TimeSignature::default());
         self.note_length = note_duration_to_notes(NoteDuration::default());
+        self.apply_pending_time_signature_changes();
     }
 
     /// Advances state by one rest.
     pub fn next_rest(&mut self, rest: &Rest) {
-        self.advance(rest.duration);
+        if let Some(multiplier) = rest.multiplier {
+            let rest_duration = rest
+                .duration
+                .expect("Rest duration needs to be present when there is a multiplier");
+
+            self.note_length = note_duration_to_notes(rest_duration);
+
+            let multiplier = Fraction::new(multiplier.num, multiplier.den);
+            self.advance_by(self.note_length * multiplier);
+        } else {
+            self.advance(rest.duration);
+        }
     }
 
     /// Returns timing information for `note` and advances internal state.
@@ -223,5 +245,133 @@ impl TimingHelper {
     pub fn from_score(score: &LilyScore) -> Self {
         let (time_signature_changes, tempo_changes) = Self::extract_time_signature_and_tempo_changes(score);
         Self::new(time_signature_changes, tempo_changes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lilyparse::syntax::ast::{Accidental, Dynamic, Note, PitchClass, Tuplet};
+
+    fn note(duration: Option<NoteDuration>) -> Note {
+        Note {
+            class: PitchClass::C,
+            accidental: Accidental::None,
+            octave: 0,
+            duration,
+            dynamic: Some(Dynamic::MF),
+            articulation: None,
+            crescendo: None,
+            tie: false,
+        }
+    }
+
+    fn part(events: Vec<Event>) -> LilyPart {
+        LilyPart {
+            name: "string".to_owned(),
+            events,
+        }
+    }
+
+    fn empty_part(name: &str) -> LilyPart {
+        LilyPart {
+            name: name.to_owned(),
+            events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn converts_dotted_and_tuplet_durations() {
+        assert_eq!(
+            note_duration_to_notes(NoteDuration {
+                ratio: 4,
+                augmentation: 0,
+                tuplet: None,
+            }),
+            Fraction::new(1u32, 4u32)
+        );
+        assert_eq!(
+            note_duration_to_notes(NoteDuration {
+                ratio: 4,
+                augmentation: 1,
+                tuplet: None,
+            }),
+            Fraction::new(3u32, 8u32)
+        );
+        assert_eq!(
+            note_duration_to_notes(NoteDuration {
+                ratio: 8,
+                augmentation: 0,
+                tuplet: Some(Tuplet { num: 3, den: 2 }),
+            }),
+            Fraction::new(1u32, 12u32)
+        );
+    }
+
+    #[test]
+    fn timed_events_use_carried_note_durations() {
+        let timed_events = TimingHelper::get_timed_events(&part(vec![
+            Event::Note(note(Some(NoteDuration {
+                ratio: 4,
+                augmentation: 0,
+                tuplet: None,
+            }))),
+            Event::Note(note(None)),
+            Event::Rest(Rest {
+                duration: None,
+                dynamic: None,
+                articulation: None,
+                crescendo: None,
+                multiplier: None,
+            }),
+        ]));
+
+        assert_eq!(timed_events.len(), 3);
+        assert_eq!(timed_events[0].note_stamp, Fraction::new(0u32, 1u32));
+        assert_eq!(timed_events[1].note_stamp, Fraction::new(1u32, 4u32));
+        assert_eq!(timed_events[2].note_stamp, Fraction::new(1u32, 2u32));
+    }
+
+    #[test]
+    fn applies_initial_time_signature_before_first_note() {
+        let score = LilyScore {
+            header: None,
+            global: ast::Global::default(),
+            parts: [
+                part(vec![
+                    Event::TimeSignature(TimeSignature {
+                        numerator: 3,
+                        denominator: 4,
+                    }),
+                    Event::Note(note(Some(NoteDuration {
+                        ratio: 4,
+                        augmentation: 0,
+                        tuplet: None,
+                    }))),
+                ]),
+                empty_part("2"),
+                empty_part("3"),
+                empty_part("4"),
+                empty_part("5"),
+                empty_part("6"),
+            ],
+        };
+
+        let mut helper = TimingHelper::from_score(&score);
+        helper.reset();
+
+        let info = helper.next_note(&note(Some(NoteDuration {
+            ratio: 4,
+            augmentation: 0,
+            tuplet: None,
+        })));
+
+        assert_eq!(
+            info.time_signature,
+            TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            }
+        );
     }
 }

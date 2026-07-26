@@ -82,6 +82,13 @@ pub struct Tuplet {
     pub den: u8,
 }
 
+/// Tuplet ratio (Rest duration * `num` / `den`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestMultiplier {
+    pub num: u8,
+    pub den: u8,
+}
+
 /// Musical duration relative to a whole note.
 ///
 /// `ratio` is the denominator (`4` = quarter), `augmentation` is the number of dots.
@@ -112,6 +119,7 @@ pub struct Note {
     pub dynamic: Option<Dynamic>,
     pub articulation: Option<Articulation>,
     pub crescendo: Option<Crescendo>,
+    pub tie: bool,
 }
 
 /// Rest event.
@@ -121,6 +129,7 @@ pub struct Rest {
     pub dynamic: Option<Dynamic>,
     pub articulation: Option<Articulation>,
     pub crescendo: Option<Crescendo>,
+    pub multiplier: Option<RestMultiplier>,
 }
 
 /// Chromatic alteration.

@@ -1,5 +1,5 @@
 use fraction::Zero;
-use lilyparse::syntax::ast::{self, Crescendo, Dynamic, Event, LilyPart};
+use lilyparse::syntax::ast::{self, Crescendo, Dynamic, Event, LilyPart, Rest};
 
 use crate::machine_score::{
     MidiVolume,
@@ -104,13 +104,17 @@ impl<'a> DynamicBuilder<'a> {
             return;
         }
 
-        if let Event::Note(note) = event {
-            if let Some(dynamic) = note.dynamic {
-                self.end_block(dynamic);
-            } else if note.crescendo.is_some() {
-                let dynamic = Self::infer_crescendo_end_dynamic(self);
-                self.end_block(dynamic);
-            }
+        let (dynamic, crescendo) = match event {
+            Event::Note(note) => (note.dynamic, note.crescendo),
+            Event::Rest(rest) => (rest.dynamic, rest.crescendo),
+            _ => return,
+        };
+
+        if let Some(dynamic) = dynamic {
+            self.end_block(dynamic);
+        } else if crescendo.is_some() {
+            let dynamic = Self::infer_crescendo_end_dynamic(self);
+            self.end_block(dynamic);
         }
     }
 
@@ -120,12 +124,16 @@ impl<'a> DynamicBuilder<'a> {
             return;
         }
 
-        if let Event::Note(note) = event {
-            if let Some(crescendo) = note.crescendo
-                && crescendo != Crescendo::End
-            {
-                self.start_block(crescendo);
-            }
+        let crescendo = match event {
+            Event::Note(note) => note.crescendo,
+            Event::Rest(rest) => rest.crescendo,
+            _ => None,
+        };
+
+        if let Some(crescendo) = crescendo
+            && crescendo != Crescendo::End
+        {
+            self.start_block(crescendo);
         }
     }
 
@@ -145,11 +153,20 @@ impl<'a> DynamicBuilder<'a> {
     fn update_state(&mut self, timed_event: &TimedEvent) {
         let TimedEvent { event, note_stamp } = timed_event;
 
-        if let Event::Note(note) = event {
-            self.note_stamp = *note_stamp;
-            if let Some(dynamic) = note.dynamic {
-                self.dynamic = dynamic;
+        match event {
+            Event::Note(note) => {
+                self.note_stamp = *note_stamp;
+                if let Some(dynamic) = note.dynamic {
+                    self.dynamic = dynamic;
+                }
             }
+            Event::Rest(rest) => {
+                self.note_stamp = *note_stamp;
+                if let Some(dynamic) = rest.dynamic {
+                    self.dynamic = dynamic;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -217,6 +234,13 @@ impl DynamicHelper {
         Self::fraction_to_volume(Self::dynamic_to_fraction(dynamic))
     }
 
+    /// Updates the current dynamic state from a rest event.
+    pub fn next_rest(&mut self, rest: &Rest) {
+        if let Some(dynamic) = rest.dynamic {
+            self.dynamic = dynamic;
+        }
+    }
+
     /// Returns the volume for the next note at `timing.note_stamp`.
     pub fn next_note(&mut self, note: &ast::Note, timing: &NoteTimingInfo) -> MidiVolume {
         if let Some(dynamic) = note.dynamic {
@@ -250,5 +274,192 @@ impl DynamicHelper {
         }
 
         Self::dynamic_to_volume(self.dynamic)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lilyparse::syntax::ast::{Accidental, Articulation, Note, NoteDuration, PitchClass};
+
+    fn note(duration: Option<NoteDuration>, dynamic: Option<Dynamic>, crescendo: Option<Crescendo>) -> Note {
+        Note {
+            class: PitchClass::C,
+            accidental: Accidental::None,
+            octave: 0,
+            duration,
+            dynamic,
+            articulation: Some(Articulation::Portato),
+            crescendo,
+            tie: false,
+        }
+    }
+
+    fn rest(duration: Option<NoteDuration>, dynamic: Option<Dynamic>, crescendo: Option<Crescendo>) -> Rest {
+        Rest {
+            duration,
+            dynamic,
+            articulation: None,
+            crescendo,
+            multiplier: None,
+        }
+    }
+
+    fn part(events: Vec<Event>) -> LilyPart {
+        LilyPart {
+            name: "string".to_owned(),
+            events,
+        }
+    }
+
+    #[test]
+    fn interpolates_volume_inside_crescendo_block() {
+        let part = part(vec![
+            Event::Note(note(
+                Some(NoteDuration {
+                    ratio: 4,
+                    augmentation: 0,
+                    tuplet: None,
+                }),
+                Some(Dynamic::MF),
+                Some(Crescendo::CrescendoStart),
+            )),
+            Event::Note(note(
+                Some(NoteDuration {
+                    ratio: 4,
+                    augmentation: 0,
+                    tuplet: None,
+                }),
+                None,
+                None,
+            )),
+            Event::Note(note(
+                Some(NoteDuration {
+                    ratio: 4,
+                    augmentation: 0,
+                    tuplet: None,
+                }),
+                None,
+                Some(Crescendo::End),
+            )),
+        ]);
+        let timed_events = TimingHelper::get_timed_events(&part);
+        let mut helper = DynamicBuilder::build(&part);
+
+        let first = match &timed_events[0].event {
+            Event::Note(note) => helper.next_note(
+                note,
+                &NoteTimingInfo {
+                    note: note.clone(),
+                    time_signature: lilyparse::syntax::ast::TimeSignature::default(),
+                    bar_number: 0,
+                    position_in_bar: Fraction::new(0u32, 1u32),
+                    note_stamp: timed_events[0].note_stamp,
+                    length: Fraction::new(1u32, 4u32),
+                },
+            ),
+            _ => unreachable!(),
+        };
+        let second = match &timed_events[1].event {
+            Event::Note(note) => helper.next_note(
+                note,
+                &NoteTimingInfo {
+                    note: note.clone(),
+                    time_signature: lilyparse::syntax::ast::TimeSignature::default(),
+                    bar_number: 0,
+                    position_in_bar: Fraction::new(1u32, 4u32),
+                    note_stamp: timed_events[1].note_stamp,
+                    length: Fraction::new(1u32, 4u32),
+                },
+            ),
+            _ => unreachable!(),
+        };
+        let third = match &timed_events[2].event {
+            Event::Note(note) => helper.next_note(
+                note,
+                &NoteTimingInfo {
+                    note: note.clone(),
+                    time_signature: lilyparse::syntax::ast::TimeSignature::default(),
+                    bar_number: 0,
+                    position_in_bar: Fraction::new(1u32, 2u32),
+                    note_stamp: timed_events[2].note_stamp,
+                    length: Fraction::new(1u32, 4u32),
+                },
+            ),
+            _ => unreachable!(),
+        };
+
+        assert_eq!(first.volume, 80);
+        assert_eq!(second.volume, 88);
+        assert_eq!(third.volume, 96);
+    }
+
+    #[test]
+    fn rest_dynamic_updates_following_note_volume() {
+        let part = part(vec![
+            Event::Note(note(
+                Some(NoteDuration {
+                    ratio: 4,
+                    augmentation: 0,
+                    tuplet: None,
+                }),
+                Some(Dynamic::MF),
+                None,
+            )),
+            Event::Rest(rest(
+                Some(NoteDuration {
+                    ratio: 4,
+                    augmentation: 0,
+                    tuplet: None,
+                }),
+                Some(Dynamic::P),
+                None,
+            )),
+            Event::Note(note(
+                Some(NoteDuration {
+                    ratio: 4,
+                    augmentation: 0,
+                    tuplet: None,
+                }),
+                None,
+                None,
+            )),
+        ]);
+        let timed_events = TimingHelper::get_timed_events(&part);
+        let mut helper = DynamicBuilder::build(&part);
+
+        let first_note = match &timed_events[0].event {
+            Event::Note(note) => note,
+            _ => unreachable!(),
+        };
+        let first_info = NoteTimingInfo {
+            note: first_note.clone(),
+            time_signature: lilyparse::syntax::ast::TimeSignature::default(),
+            bar_number: 0,
+            position_in_bar: Fraction::new(0u32, 1u32),
+            note_stamp: timed_events[0].note_stamp,
+            length: Fraction::new(1u32, 4u32),
+        };
+        assert_eq!(helper.next_note(first_note, &first_info).volume, 80);
+
+        let rest = match &timed_events[1].event {
+            Event::Rest(rest) => rest,
+            _ => unreachable!(),
+        };
+        helper.next_rest(rest);
+
+        let second_note = match &timed_events[2].event {
+            Event::Note(note) => note,
+            _ => unreachable!(),
+        };
+        let second_info = NoteTimingInfo {
+            note: second_note.clone(),
+            time_signature: lilyparse::syntax::ast::TimeSignature::default(),
+            bar_number: 0,
+            position_in_bar: Fraction::new(1u32, 2u32),
+            note_stamp: timed_events[2].note_stamp,
+            length: Fraction::new(1u32, 4u32),
+        };
+        assert_eq!(helper.next_note(second_note, &second_info).volume, 48);
     }
 }

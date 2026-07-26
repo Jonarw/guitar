@@ -10,6 +10,7 @@ pub mod dynamic;
 pub mod timing;
 
 /// MIDI pitch value in range `0..=127`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiPitch {
     pub pitch: u8,
 }
@@ -26,6 +27,7 @@ impl MidiPitch {
 }
 
 /// MIDI note velocity in range `0..=127`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiVolume {
     pub volume: u8,
 }
@@ -44,6 +46,7 @@ impl MidiVolume {
 }
 
 /// One machine-playable note instruction.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Note {
     pub pitch: MidiPitch,
     pub volume: MidiVolume,
@@ -54,6 +57,7 @@ pub struct Note {
 }
 
 /// Plucking actuator strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluckTechnique {
     Soft,
     Hard,
@@ -61,18 +65,21 @@ pub enum PluckTechnique {
 }
 
 /// Fretting pressure strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FingerTechnique {
     Quiet,
     Loud,
 }
 
 /// Converted score containing per-string machine note instructions.
+#[derive(Debug, PartialEq, Eq)]
 pub struct MachineScore {
     pub title: String,
     pub parts: [MachineScorePart; 6],
 }
 
 /// Converted events for one part/string.
+#[derive(Debug, PartialEq, Eq)]
 pub struct MachineScorePart {
     pub name: String,
     pub notes: Vec<Note>,
@@ -85,6 +92,7 @@ struct LilyPartConverter<'a> {
     dynamic_helper: DynamicHelper,
     notes: Vec<Note>,
     articulation: Articulation,
+    next_note_tied: bool,
 }
 
 impl<'a> LilyPartConverter<'a> {
@@ -98,6 +106,7 @@ impl<'a> LilyPartConverter<'a> {
             dynamic_helper,
             notes: Vec::new(),
             articulation: Articulation::Portato,
+            next_note_tied: false,
         }
     }
 
@@ -147,6 +156,7 @@ impl<'a> LilyPartConverter<'a> {
 
     /// Applies rest timing progression.
     fn process_rest(&mut self, rest: &Rest) {
+        self.dynamic_helper.next_rest(rest);
         self.timing_helper.next_rest(rest);
     }
 
@@ -158,16 +168,26 @@ impl<'a> LilyPartConverter<'a> {
 
         let timing_info = self.timing_helper.next_note(note);
         let volume = self.dynamic_helper.next_note(note, &timing_info);
-
         let (pluck_technique, finger_technique) = self.current_technique();
-        self.notes.push(Note {
-            pitch: Self::note_to_midi_pitch(note),
-            volume,
-            length: timing_info.length,
-            start: timing_info.note_stamp,
-            pluck_technique,
-            finger_technique,
-        });
+
+        if self.next_note_tied {
+            let last_note = self
+                .notes
+                .last_mut()
+                .expect("When the last note was tied, there must be at least one note in self.notes");
+            last_note.length += timing_info.length;
+        } else {
+            self.notes.push(Note {
+                pitch: Self::note_to_midi_pitch(note),
+                volume,
+                length: timing_info.length,
+                start: timing_info.note_stamp,
+                pluck_technique,
+                finger_technique,
+            });
+        }
+
+        self.next_note_tied = note.tie;
     }
 
     /// Converts all note-like events in the part.
@@ -209,5 +229,191 @@ impl MachineScore {
             title: score_title,
             parts,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lilyparse::syntax::ast::{Accidental, Crescendo, Dynamic, Header, Note as LilyNote, NoteDuration, PitchClass};
+
+    fn lily_note(
+        class: PitchClass,
+        octave: i8,
+        duration: Option<NoteDuration>,
+        dynamic: Option<Dynamic>,
+        articulation: Option<Articulation>,
+        crescendo: Option<Crescendo>,
+    ) -> LilyNote {
+        LilyNote {
+            class,
+            accidental: Accidental::None,
+            octave,
+            duration,
+            dynamic,
+            articulation,
+            crescendo,
+            tie: false,
+        }
+    }
+
+    fn lily_rest(duration: Option<NoteDuration>, dynamic: Option<Dynamic>) -> Rest {
+        Rest {
+            duration,
+            dynamic,
+            articulation: None,
+            crescendo: None,
+            multiplier: None,
+        }
+    }
+
+    fn empty_part(name: &str) -> LilyPart {
+        LilyPart {
+            name: name.to_owned(),
+            events: Vec::new(),
+        }
+    }
+
+    fn score_with_first_part(events: Vec<Event>) -> LilyScore {
+        LilyScore {
+            header: Some(Header {
+                title: Some("Study".to_owned()),
+            }),
+            global: ast::Global::default(),
+            parts: [
+                LilyPart {
+                    name: "stringOne".to_owned(),
+                    events,
+                },
+                empty_part("stringTwo"),
+                empty_part("stringThree"),
+                empty_part("stringFour"),
+                empty_part("stringFive"),
+                empty_part("stringSix"),
+            ],
+        }
+    }
+
+    #[test]
+    fn converts_lily_notes_to_midi_pitch() {
+        assert_eq!(
+            LilyPartConverter::note_to_midi_pitch(&lily_note(PitchClass::C, 0, None, None, None, None,)),
+            MidiPitch { pitch: 48 }
+        );
+        assert_eq!(
+            LilyPartConverter::note_to_midi_pitch(&LilyNote {
+                accidental: Accidental::Sharp,
+                ..lily_note(PitchClass::F, 1, None, None, None, None)
+            }),
+            MidiPitch { pitch: 66 }
+        );
+    }
+
+    #[test]
+    fn machine_score_conversion_preserves_timing_and_expression() {
+        let score = score_with_first_part(vec![
+            Event::TimeSignature(ast::TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            }),
+            Event::Note(lily_note(
+                PitchClass::C,
+                0,
+                Some(NoteDuration {
+                    ratio: 4,
+                    augmentation: 0,
+                    tuplet: None,
+                }),
+                Some(Dynamic::MF),
+                Some(Articulation::Tenuto),
+                None,
+            )),
+            Event::Rest(lily_rest(
+                Some(NoteDuration {
+                    ratio: 4,
+                    augmentation: 0,
+                    tuplet: None,
+                }),
+                Some(Dynamic::P),
+            )),
+            Event::Note(lily_note(
+                PitchClass::D,
+                0,
+                None,
+                None,
+                Some(Articulation::Staccato),
+                None,
+            )),
+        ]);
+
+        let machine_score = MachineScore::from_lilyscore(score);
+
+        assert_eq!(machine_score.title, "Study");
+        assert_eq!(machine_score.parts[0].notes.len(), 2);
+        assert_eq!(machine_score.parts[0].notes[0].start, timing::Fraction::new(0u32, 1u32));
+        assert_eq!(
+            machine_score.parts[0].notes[0].length,
+            timing::Fraction::new(1u32, 4u32)
+        );
+        assert_eq!(machine_score.parts[0].notes[0].pitch, MidiPitch { pitch: 48 });
+        assert_eq!(machine_score.parts[0].notes[0].volume, MidiVolume { volume: 80 });
+        assert_eq!(machine_score.parts[0].notes[0].pluck_technique, PluckTechnique::Soft);
+        assert_eq!(machine_score.parts[0].notes[0].finger_technique, FingerTechnique::Quiet);
+
+        assert_eq!(machine_score.parts[0].notes[1].start, timing::Fraction::new(1u32, 2u32));
+        assert_eq!(
+            machine_score.parts[0].notes[1].length,
+            timing::Fraction::new(1u32, 4u32)
+        );
+        assert_eq!(machine_score.parts[0].notes[1].pitch, MidiPitch { pitch: 50 });
+        assert_eq!(machine_score.parts[0].notes[1].volume, MidiVolume { volume: 48 });
+        assert_eq!(machine_score.parts[0].notes[1].pluck_technique, PluckTechnique::Hard);
+        assert_eq!(machine_score.parts[0].notes[1].finger_technique, FingerTechnique::Quiet);
+    }
+
+    #[test]
+    fn conversion_resets_timing_for_each_part() {
+        let quarter = Some(NoteDuration {
+            ratio: 4,
+            augmentation: 0,
+            tuplet: None,
+        });
+        let score = LilyScore {
+            header: None,
+            global: ast::Global::default(),
+            parts: [
+                LilyPart {
+                    name: "one".to_owned(),
+                    events: vec![Event::Note(lily_note(
+                        PitchClass::C,
+                        0,
+                        quarter,
+                        Some(Dynamic::MF),
+                        None,
+                        None,
+                    ))],
+                },
+                LilyPart {
+                    name: "two".to_owned(),
+                    events: vec![Event::Note(lily_note(
+                        PitchClass::E,
+                        0,
+                        quarter,
+                        Some(Dynamic::MF),
+                        None,
+                        None,
+                    ))],
+                },
+                empty_part("three"),
+                empty_part("four"),
+                empty_part("five"),
+                empty_part("six"),
+            ],
+        };
+
+        let machine_score = MachineScore::from_lilyscore(score);
+
+        assert_eq!(machine_score.parts[0].notes[0].start, timing::Fraction::new(0u32, 1u32));
+        assert_eq!(machine_score.parts[1].notes[0].start, timing::Fraction::new(0u32, 1u32));
     }
 }
