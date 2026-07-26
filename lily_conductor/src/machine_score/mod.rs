@@ -105,7 +105,7 @@ impl<'a> LilyPartConverter<'a> {
             timing_helper,
             dynamic_helper,
             notes: Vec::new(),
-            articulation: Articulation::Portato,
+            articulation: Articulation::Staccato,
             next_note_tied: false,
         }
     }

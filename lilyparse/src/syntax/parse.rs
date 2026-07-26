@@ -1,6 +1,6 @@
 use winnow::{
     Result,
-    ascii::{alpha1, digit1, multispace1, till_line_ending},
+    ascii::{digit1, multispace1, till_line_ending},
     combinator::{alt, delimited, opt, preceded, repeat, seq, terminated},
     error::{ContextError, StrContext::Label},
     prelude::*,
@@ -25,10 +25,10 @@ fn pitch_class(input: &mut &str) -> Result<PitchClass> {
 
 fn accidental(input: &mut &str) -> Result<Accidental> {
     alt((
-        "eses".value(Accidental::DoubleFlat),
-        "isis".value(Accidental::DoubleSharp),
-        "es".value(Accidental::Flat),
-        "is".value(Accidental::Sharp),
+        "ff".value(Accidental::DoubleFlat),
+        "ss".value(Accidental::DoubleSharp),
+        "f".value(Accidental::Flat),
+        "s".value(Accidental::Sharp),
         "".value(Accidental::None),
     ))
     .context(Label("Pitch"))
@@ -306,12 +306,14 @@ fn key(input: &mut &str) -> Result<Key> {
         _: expect_command("key"),
         _: discard,
         pitch_class,
+        accidental,
         _: discard,
         major_minor,
     )
     .context(Label("Key Signature"))
-    .map(|(pitch_class, major_minor)| Key {
+    .map(|(pitch_class, accidental, major_minor)| Key {
         tonic: pitch_class,
+        accidental,
         major: major_minor,
     })
     .parse_next(input)
@@ -335,6 +337,18 @@ fn strings(input: &mut &str) -> Result<[LilyPart; NUMBER_OF_STRINGS]> {
     ])
 }
 
+fn language(input: &mut &str) -> Result<()> {
+    seq!(
+        discard,
+        expect_command("language"),
+        discard,
+        delimited('"', "english", '"').context(Label("Language Name"))
+    )
+    .void()
+    .context(Label("Language"))
+    .parse_next(input)
+}
+
 fn version(input: &mut &str) -> Result<()> {
     seq!(
         discard,
@@ -348,22 +362,36 @@ fn version(input: &mut &str) -> Result<()> {
 }
 
 pub fn title(input: &mut &str) -> Result<String> {
-    preceded((discard, "title", discard, "=", discard), delimited('"', alpha1, '"'))
-        .context(Label("Title"))
-        .parse_next(input)
-        .map(|s| s.to_owned())
+    preceded(
+        (discard, "title", discard, "=", discard),
+        delimited('"', take_while(0.., |c: char| c != '"'), '"'),
+    )
+    .context(Label("Title"))
+    .parse_next(input)
+    .map(|s| s.to_owned())
 }
 
 pub fn header(input: &mut &str) -> Result<Header> {
-    variable("header", opt(title))
-        .map(|title| Header { title })
-        .context(Label("Header"))
-        .parse_next(input)
+    seq!(
+        _: discard,
+        _: expect_command("header").context(Label("Command")),
+        _: discard,
+        _: '{'.context(Label("Opening Brace")),
+        _: discard,
+        opt(title).context(Label("Title")),
+        _: discard,
+        _: '}'.context(Label("Closing Brace"))
+    )
+    .map(|(title,)| Header { title })
+    .context(Label("Header"))
+    .parse_next(input)
 }
 
 pub fn score(input: &mut &str) -> Result<LilyScore> {
     seq!(
         _: opt(version),
+        _: discard,
+        _: language,
         _: discard,
         opt(header),
         _: discard,
@@ -380,6 +408,11 @@ pub fn score(input: &mut &str) -> Result<LilyScore> {
     .parse_next(input)
 }
 
+/// Parses a full LilyPond score and preserves location/context on failure.
+pub fn parse_score(input: &str) -> core::result::Result<LilyScore, winnow::error::ParseError<&str, ContextError>> {
+    score.parse(input)
+}
+
 #[test]
 fn parses_pitch_classes() {
     assert_eq!(pitch_class.parse("c"), Ok(PitchClass::C));
@@ -389,10 +422,10 @@ fn parses_pitch_classes() {
 #[test]
 fn parses_accidentals() {
     assert_eq!(accidental.parse(""), Ok(Accidental::None));
-    assert_eq!(accidental.parse("is"), Ok(Accidental::Sharp));
-    assert_eq!(accidental.parse("isis"), Ok(Accidental::DoubleSharp));
-    assert_eq!(accidental.parse("es"), Ok(Accidental::Flat));
-    assert_eq!(accidental.parse("eses"), Ok(Accidental::DoubleFlat));
+    assert_eq!(accidental.parse("s"), Ok(Accidental::Sharp));
+    assert_eq!(accidental.parse("ss"), Ok(Accidental::DoubleSharp));
+    assert_eq!(accidental.parse("f"), Ok(Accidental::Flat));
+    assert_eq!(accidental.parse("ff"), Ok(Accidental::DoubleFlat));
 }
 
 #[test]
@@ -427,7 +460,7 @@ fn parses_duration() {
 
 #[test]
 fn parses_note() {
-    let note = note.parse("fis''8.\\mf\\<").unwrap();
+    let note = note.parse("fs''8.\\mf\\<").unwrap();
 
     assert_eq!(note.class, PitchClass::F);
     assert_eq!(note.accidental, Accidental::Sharp);
@@ -477,9 +510,10 @@ fn parses_tempo() {
 #[test]
 fn parses_key() {
     assert_eq!(
-        key.parse("\\key g \\major"),
+        key.parse("\\key gf \\major"),
         Ok(Key {
             tonic: PitchClass::G,
+            accidental: Accidental::Flat,
             major: true,
         })
     );
@@ -491,7 +525,7 @@ fn parses_events() {
         .parse(
             "c4
         r4
-        fis8\\f",
+        fs8\\f",
         )
         .unwrap();
 
@@ -499,10 +533,26 @@ fn parses_events() {
 }
 
 #[test]
+fn parses_header() {
+    let input = r#"
+        \header
+        %comment
+        {
+          title   =
+          %comment
+          "Smoke on the Water"
+        }"#;
+
+    let header = header.parse(input).unwrap();
+
+    assert_eq!(header.title.unwrap(), "Smoke on the Water".to_owned());
+}
+
+#[test]
 fn parses_global_section() {
     let input = r#"
         global = {
-            \key c \major
+            \key bs \major
         }"#;
 
     let global = global.parse(input).unwrap();
@@ -511,7 +561,8 @@ fn parses_global_section() {
         global,
         Global {
             key: Some(Key {
-                tonic: PitchClass::C,
+                tonic: PitchClass::B,
+                accidental: Accidental::Sharp,
                 major: true,
             }),
         }
@@ -522,8 +573,8 @@ fn parses_global_section() {
 fn parses_full_score() {
     let input = r#"
         \version "2.26.0"
-
-        header = {
+        \language "english"
+        \header {
             title = "title"
         }
 
@@ -572,6 +623,7 @@ fn parses_full_score() {
         score.global.key,
         Some(Key {
             tonic: PitchClass::G,
+            accidental: Accidental::None,
             major: true,
         })
     );

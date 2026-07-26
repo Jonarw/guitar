@@ -56,6 +56,7 @@ impl Default for TimeSignature {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Key {
     pub tonic: PitchClass,
+    pub accidental: Accidental,
     pub major: bool,
 }
 

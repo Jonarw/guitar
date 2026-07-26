@@ -1,0 +1,16 @@
+[
+  {
+    "label": "Debug lily_conductor with LilyPond file",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "build": "Build lily_conductor",
+    "program": "$ZED_WORKTREE_ROOT/lily_conductor/target/debug/lily_conductor",
+    "args": [
+      "${ZED_SELECTED_TEXT:/home/jon/Documents/sotw.ly}"
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "sourceLanguages": [
+      "rust"
+    ]
+  }
+]
