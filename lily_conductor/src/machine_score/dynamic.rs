@@ -1,11 +1,11 @@
 use core::panic;
-use std::todo;
 
+use fraction::Zero;
 use lilyparse::syntax::ast::{self, Crescendo, Dynamic, Event, LilyPart};
 
 use crate::machine_score::{
-    MidiVolume, dynamic,
-    timing::{Notes, TimedEvent, TimingHelper},
+    MidiVolume,
+    timing::{Fraction, NoteTimingInfo, Notes, TimedEvent, TimingHelper},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,30 +167,57 @@ impl<'a> DynamicBuilder<'a> {
 }
 
 impl DynamicHelper {
-    fn dynamic_to_volume(dynamic: Dynamic) -> f64 {
+    fn dynamic_to_fraction(dynamic: Dynamic) -> Fraction {
         match dynamic {
-            Dynamic::PPP => 1.0 / 8.0,
-            Dynamic::PP => 2.0 / 8.0,
-            Dynamic::P => 3.0 / 8.0,
-            Dynamic::MP => 4.0 / 8.0,
-            Dynamic::MF => 5.0 / 8.0,
-            Dynamic::F => 6.0 / 8.0,
-            Dynamic::FF => 7.0 / 8.0,
-            Dynamic::FFF => 8.0 / 8.0,
+            Dynamic::PPP => 1 * 128 / 8,
+            Dynamic::PP => 2 * 128 / 8,
+            Dynamic::P => 3 * 128 / 8,
+            Dynamic::MP => 4 * 128 / 8,
+            Dynamic::MF => 5 * 128 / 8,
+            Dynamic::F => 6 * 128 / 8,
+            Dynamic::FF => 7 * 128 / 8,
+            Dynamic::FFF => 8 * 128 / 8,
         }
+        .into()
     }
 
-    pub fn next_note(&mut self, note: ast::Note, note_stamp: Notes) -> MidiVolume {
+    fn fraction_to_volume(fraction: Fraction) -> MidiVolume {
+        if !(fraction > Fraction::zero()) {
+            panic!("fraction cannot be negative");
+        }
+
+        let num = *fraction.trunc().numer().unwrap();
+        if num >= 128 {
+            panic!("value outside of allowed range");
+        }
+
+        MidiVolume { volume: num as u8 }
+    }
+
+    fn dynamic_to_volume(dynamic: Dynamic) -> MidiVolume {
+        Self::fraction_to_volume(Self::dynamic_to_fraction(dynamic))
+    }
+
+    pub fn next_note(&mut self, note: &ast::Note, timing: &NoteTimingInfo) -> MidiVolume {
         if let Some(dynamic) = note.dynamic {
             self.dynamic = dynamic;
-            return MidiVolume::from_f64(Self::dynamic_to_volume(dynamic));
+            return Self::dynamic_to_volume(dynamic);
         }
 
         if self.crescendo_index < self.crescendo_blocks.len() {
-            let crescendo_block = self.crescendo_blocks[self.crescendo_index];
-            if crescendo_block.start.time < note_stamp {
-                // we are inside the crescendo block!
+            let crescendo_block = &self.crescendo_blocks[self.crescendo_index];
+            if crescendo_block.start.time < timing.note_stamp {
+                let y1 = Self::dynamic_to_fraction(crescendo_block.start.dynamic);
+                let y2 = Self::dynamic_to_fraction(crescendo_block.end.dynamic);
+                let x1 = crescendo_block.start.time;
+                let x2 = crescendo_block.end.time;
+                let x = timing.note_stamp;
+
+                let fraction = (x - x1) / (x2 - x1) * (y2 - y1) + y1;
+                return Self::fraction_to_volume(fraction);
             }
         }
+
+        return Self::dynamic_to_volume(self.dynamic);
     }
 }

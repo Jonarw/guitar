@@ -1,12 +1,10 @@
-use std::{panic, todo};
+use std::panic;
 
 use fraction::{GenericFraction, Zero};
 use lilyparse::syntax::ast::{self, Event, LilyPart, LilyScore, NoteDuration, Rest, Tempo, TimeSignature};
 
-type Fraction = GenericFraction<u32>;
+pub type Fraction = GenericFraction<u32>;
 pub type Notes = Fraction;
-type Seconds = Fraction;
-type SecondsPerNote = Fraction;
 
 fn note_duration_to_notes(note_duration: NoteDuration) -> Fraction {
     let mut fraction = Fraction::new(
@@ -23,15 +21,6 @@ fn note_duration_to_notes(note_duration: NoteDuration) -> Fraction {
 
 fn time_signature_to_bar_length(time_signature: TimeSignature) -> Fraction {
     Fraction::new(time_signature.numerator, time_signature.denominator)
-}
-
-fn tempo_to_seconds_per_note(tempo: Tempo) -> SecondsPerNote {
-    let beat = note_duration_to_notes(tempo.note_duration);
-    let whole_notes_per_minute = Fraction::from(tempo.bpm) * beat;
-    let whole_notes_per_second = Fraction::from(60) * whole_notes_per_minute;
-
-    // result in seconds per whole note
-    whole_notes_per_second.recip()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -57,13 +46,13 @@ pub struct TimingHelper {
     note_length: Notes,
 }
 
-struct NoteTimingInfo {
-    note: ast::Note,
-    time_signature: TimeSignature,
-    bar_number: u32,
-    position_in_bar: Notes,
-    note_stamp: Notes,
-    length: Notes,
+pub struct NoteTimingInfo {
+    pub note: ast::Note,
+    pub time_signature: TimeSignature,
+    pub bar_number: u32,
+    pub position_in_bar: Notes,
+    pub note_stamp: Notes,
+    pub length: Notes,
 }
 
 impl TimingHelper {
@@ -85,15 +74,21 @@ impl TimingHelper {
         }
     }
 
-    pub fn reset(self) -> Self {
-        TimingHelper::new(self.time_signature_changes, self.tempo_changes)
+    pub fn reset(&mut self) {
+        self.time_signature_index = 0;
+        self.number_of_bars = Fraction::zero();
+        self.position_in_bar = Notes::zero();
+        self.note_stamp = Notes::zero();
+        self.time_signature = TimeSignature::default();
+        self.bar_length = time_signature_to_bar_length(TimeSignature::default());
+        self.note_length = note_duration_to_notes(NoteDuration::default());
     }
 
-    pub fn next_rest(&mut self, rest: Rest) {
+    pub fn next_rest(&mut self, rest: &Rest) {
         self.advance(rest.duration);
     }
 
-    pub fn next_note(&mut self, note: ast::Note) -> NoteTimingInfo {
+    pub fn next_note(&mut self, note: &ast::Note) -> NoteTimingInfo {
         let bar_number = *self.number_of_bars.trunc().numer().unwrap();
         let mut ret = NoteTimingInfo {
             note: note.clone(),
