@@ -1,5 +1,3 @@
-use std::panic;
-
 use lilyparse::syntax::ast::{self, Articulation, Event, LilyPart, LilyScore, Rest};
 use timing::TimingHelper;
 
@@ -11,11 +9,13 @@ use crate::machine_score::{
 pub mod dynamic;
 pub mod timing;
 
+/// MIDI pitch value in range `0..=127`.
 pub struct MidiPitch {
     pub pitch: u8,
 }
 
 impl MidiPitch {
+    /// Creates a validated MIDI pitch value.
     pub fn new(pitch: u8) -> Self {
         if pitch > 127 {
             panic!("MIDI pitch outside of allowed range");
@@ -25,12 +25,15 @@ impl MidiPitch {
     }
 }
 
+/// MIDI note velocity in range `0..=127`.
 pub struct MidiVolume {
     pub volume: u8,
 }
 
 impl MidiVolume {
-    const MAX_VALUE: u8 = 127;
+    pub(crate) const MAX_VALUE: u8 = 127;
+
+    /// Creates a validated MIDI volume value.
     pub fn new(volume: u8) -> Self {
         if volume > Self::MAX_VALUE {
             panic!("MIDI volume outside of allowed range");
@@ -38,18 +41,9 @@ impl MidiVolume {
 
         Self { volume }
     }
-
-    pub fn from_f64(volume: f64) -> Self {
-        if volume >= 1.0 || volume < 0.0 {
-            panic!("MIDI pitch outside of allowed range");
-        }
-
-        Self {
-            volume: (volume * 128.0).floor() as u8,
-        }
-    }
 }
 
+/// One machine-playable note instruction.
 pub struct Note {
     pub pitch: MidiPitch,
     pub volume: MidiVolume,
@@ -59,27 +53,32 @@ pub struct Note {
     pub finger_technique: FingerTechnique,
 }
 
+/// Plucking actuator strategy.
 pub enum PluckTechnique {
     Soft,
     Hard,
     None,
 }
 
+/// Fretting pressure strategy.
 pub enum FingerTechnique {
     Quiet,
     Loud,
 }
 
+/// Converted score containing per-string machine note instructions.
 pub struct MachineScore {
     pub title: String,
     pub parts: [MachineScorePart; 6],
 }
 
+/// Converted events for one part/string.
 pub struct MachineScorePart {
     pub name: String,
     pub notes: Vec<Note>,
 }
 
+/// Stateful converter for one LilyPond part.
 struct LilyPartConverter<'a> {
     lily_part: &'a LilyPart,
     timing_helper: &'a mut TimingHelper,
@@ -89,6 +88,7 @@ struct LilyPartConverter<'a> {
 }
 
 impl<'a> LilyPartConverter<'a> {
+    /// Creates a converter with fresh timing/dynamic state.
     pub fn new(lily_part: &'a LilyPart, timing_helper: &'a mut TimingHelper) -> Self {
         let dynamic_helper = DynamicBuilder::build(lily_part);
         timing_helper.reset();
@@ -101,6 +101,7 @@ impl<'a> LilyPartConverter<'a> {
         }
     }
 
+    /// Maps articulation marks to hardware techniques.
     fn current_technique(&self) -> (PluckTechnique, FingerTechnique) {
         match self.articulation {
             Articulation::Tenuto => (PluckTechnique::Soft, FingerTechnique::Quiet),
@@ -111,34 +112,45 @@ impl<'a> LilyPartConverter<'a> {
         }
     }
 
-    fn note_to_midi_pitch(note: &ast::Note) -> u8 {
+    /// Converts a LilyPond note to a checked MIDI pitch.
+    fn note_to_midi_pitch(note: &ast::Note) -> MidiPitch {
         const MIDI_C: i8 = 48;
         const SEMITONES_PER_OCTAVE: i8 = 12;
 
-        (MIDI_C
-            + match note.class {
-                ast::PitchClass::C => 0,
-                ast::PitchClass::D => 2,
-                ast::PitchClass::E => 4,
-                ast::PitchClass::F => 5,
-                ast::PitchClass::G => 7,
-                ast::PitchClass::A => 9,
-                ast::PitchClass::B => 11,
-            }
-            + match note.accidental {
-                ast::Accidental::DoubleFlat => -2,
-                ast::Accidental::Flat => -1,
-                ast::Accidental::None => 0,
-                ast::Accidental::Sharp => 1,
-                ast::Accidental::DoubleSharp => 2,
-            }
-            + note.octave * SEMITONES_PER_OCTAVE) as u8
+        let pitch = i16::from(
+            MIDI_C
+                + match note.class {
+                    ast::PitchClass::C => 0,
+                    ast::PitchClass::D => 2,
+                    ast::PitchClass::E => 4,
+                    ast::PitchClass::F => 5,
+                    ast::PitchClass::G => 7,
+                    ast::PitchClass::A => 9,
+                    ast::PitchClass::B => 11,
+                }
+                + match note.accidental {
+                    ast::Accidental::DoubleFlat => -2,
+                    ast::Accidental::Flat => -1,
+                    ast::Accidental::None => 0,
+                    ast::Accidental::Sharp => 1,
+                    ast::Accidental::DoubleSharp => 2,
+                }
+                + note.octave * SEMITONES_PER_OCTAVE,
+        );
+
+        if !(0..=127).contains(&pitch) {
+            panic!("Converted pitch outside of MIDI range");
+        }
+
+        MidiPitch::new(pitch as u8)
     }
 
+    /// Applies rest timing progression.
     fn process_rest(&mut self, rest: &Rest) {
         self.timing_helper.next_rest(rest);
     }
 
+    /// Converts one LilyPond note event.
     fn process_note(&mut self, note: &ast::Note) {
         if let Some(articulation) = note.articulation {
             self.articulation = articulation;
@@ -149,7 +161,7 @@ impl<'a> LilyPartConverter<'a> {
 
         let (pluck_technique, finger_technique) = self.current_technique();
         self.notes.push(Note {
-            pitch: MidiPitch::new(Self::note_to_midi_pitch(note)),
+            pitch: Self::note_to_midi_pitch(note),
             volume,
             length: timing_info.length,
             start: timing_info.note_stamp,
@@ -158,8 +170,9 @@ impl<'a> LilyPartConverter<'a> {
         });
     }
 
+    /// Converts all note-like events in the part.
     pub fn convert(mut self) -> MachineScorePart {
-        for event in self.lily_part.events.iter() {
+        for event in &self.lily_part.events {
             match event {
                 Event::Note(note) => {
                     self.process_note(note);
@@ -179,13 +192,13 @@ impl<'a> LilyPartConverter<'a> {
 }
 
 impl MachineScore {
+    /// Converts a parsed LilyPond score into machine-playable parts.
     pub fn from_lilyscore(score: LilyScore) -> Self {
-        let mut score_title = "".to_owned();
-        if let Some(header) = &score.header
-            && let Some(title) = &header.title
-        {
-            score_title = title.clone();
-        }
+        let score_title = score
+            .header
+            .as_ref()
+            .and_then(|header| header.title.clone())
+            .unwrap_or_default();
 
         let mut timing_helper = TimingHelper::from_score(&score);
         let parts = score

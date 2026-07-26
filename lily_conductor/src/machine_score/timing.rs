@@ -1,16 +1,22 @@
-use std::panic;
-
 use fraction::{GenericFraction, Zero};
 use lilyparse::syntax::ast::{self, Event, LilyPart, LilyScore, NoteDuration, Rest, Tempo, TimeSignature};
 
+/// Rational number type used for musical time calculations.
 pub type Fraction = GenericFraction<u32>;
+/// Time unit measured in whole-note fractions.
 pub type Notes = Fraction;
 
+/// Converts a parsed LilyPond duration to a fractional note length.
 fn note_duration_to_notes(note_duration: NoteDuration) -> Fraction {
-    let mut fraction = Fraction::new(
-        note_duration.ratio << (note_duration.augmentation - 1) - 1,
-        note_duration.ratio << note_duration.augmentation,
-    );
+    let mut dotted_numerator = 1u32;
+    let mut dotted_denominator = 1u32;
+    // Dot series: 1, 3/2, 7/4, ... = (2^(dots+1)-1)/2^dots
+    for _ in 0..note_duration.augmentation {
+        dotted_numerator = (dotted_numerator * 2) + 1;
+        dotted_denominator *= 2;
+    }
+
+    let mut fraction = Fraction::new(dotted_numerator, u32::from(note_duration.ratio) * dotted_denominator);
 
     if let Some(tuplet) = note_duration.tuplet {
         fraction /= Fraction::new(tuplet.num, tuplet.den)
@@ -19,6 +25,7 @@ fn note_duration_to_notes(note_duration: NoteDuration) -> Fraction {
     fraction
 }
 
+/// Computes a full bar length from a time signature.
 fn time_signature_to_bar_length(time_signature: TimeSignature) -> Fraction {
     Fraction::new(time_signature.numerator, time_signature.denominator)
 }
@@ -29,15 +36,17 @@ pub enum TimingEvent {
     Tempo(Tempo),
 }
 
+/// Original event tagged with its absolute note position.
 pub struct TimedEvent {
     pub event: Event,
     pub note_stamp: Notes,
 }
 
+/// Stateful helper that tracks timeline position while iterating over events.
 pub struct TimingHelper {
     time_signature_changes: Vec<(Notes, TimeSignature)>,
     time_signature_index: usize,
-    tempo_changes: Vec<(Notes, Tempo)>,
+    _tempo_changes: Vec<(Notes, Tempo)>,
     number_of_bars: Fraction,
     position_in_bar: Notes,
     note_stamp: Notes,
@@ -46,6 +55,7 @@ pub struct TimingHelper {
     note_length: Notes,
 }
 
+/// Timing metadata for one converted note.
 pub struct NoteTimingInfo {
     pub note: ast::Note,
     pub time_signature: TimeSignature,
@@ -56,6 +66,7 @@ pub struct NoteTimingInfo {
 }
 
 impl TimingHelper {
+    /// Advances timeline state using LilyPond carry-forward duration semantics.
     fn advance(&mut self, note_duration: Option<NoteDuration>) {
         if let Some(note_duration) = note_duration {
             self.note_length = note_duration_to_notes(note_duration);
@@ -65,15 +76,18 @@ impl TimingHelper {
         self.number_of_bars += self.note_length / self.bar_length;
         self.position_in_bar = (self.position_in_bar + self.note_length) % self.bar_length;
 
-        if self.time_signature_changes.len() > self.time_signature_index {
+        while self.time_signature_changes.len() > self.time_signature_index {
             let (note_stamp, time_signature) = self.time_signature_changes[self.time_signature_index];
             if note_stamp <= self.note_stamp {
                 self.next_time_signature(time_signature);
                 self.time_signature_index += 1;
+                continue;
             }
+            break;
         }
     }
 
+    /// Resets helper state so it can be reused for another part traversal.
     pub fn reset(&mut self) {
         self.time_signature_index = 0;
         self.number_of_bars = Fraction::zero();
@@ -84,16 +98,22 @@ impl TimingHelper {
         self.note_length = note_duration_to_notes(NoteDuration::default());
     }
 
+    /// Advances state by one rest.
     pub fn next_rest(&mut self, rest: &Rest) {
         self.advance(rest.duration);
     }
 
+    /// Returns timing information for `note` and advances internal state.
     pub fn next_note(&mut self, note: &ast::Note) -> NoteTimingInfo {
-        let bar_number = *self.number_of_bars.trunc().numer().unwrap();
+        let bar_number = *self
+            .number_of_bars
+            .trunc()
+            .numer()
+            .expect("number_of_bars has a numerator");
         let mut ret = NoteTimingInfo {
             note: note.clone(),
             time_signature: self.time_signature,
-            bar_number: bar_number,
+            bar_number,
             position_in_bar: self.position_in_bar,
             note_stamp: self.note_stamp,
             length: Notes::default(),
@@ -104,6 +124,7 @@ impl TimingHelper {
         ret
     }
 
+    /// Applies a time-signature change and updates derived bar state.
     fn next_time_signature(&mut self, time_signature: TimeSignature) {
         if self.position_in_bar != Notes::zero() {
             panic!("Unaligned time signature change");
@@ -113,12 +134,13 @@ impl TimingHelper {
         self.time_signature = time_signature;
     }
 
+    /// Tags each event in a part with the note position at which it occurs.
     pub fn get_timed_events(part: &LilyPart) -> Vec<TimedEvent> {
         let mut time = Notes::default();
         let mut current_duration = NoteDuration::default();
         let mut ret = Vec::new();
 
-        for event in part.events.iter() {
+        for event in &part.events {
             ret.push(TimedEvent {
                 event: event.clone(),
                 note_stamp: time,
@@ -146,6 +168,7 @@ impl TimingHelper {
         ret
     }
 
+    /// Collects score-global timing changes from all parts.
     fn extract_time_signature_and_tempo_changes(
         score: &LilyScore,
     ) -> (Vec<(Notes, TimeSignature)>, Vec<(Notes, Tempo)>) {
@@ -164,18 +187,29 @@ impl TimingHelper {
         }
 
         time_signature_changes.sort_unstable_by_key(|t| t.0);
-        time_signature_changes.dedup();
+        time_signature_changes.dedup_by(|a, b| {
+            if a.0 == b.0 && a.1 != b.1 {
+                panic!("Conflicting time signatures at the same note stamp");
+            }
+            a == b
+        });
 
         tempo_changes.sort_unstable_by_key(|t| t.0);
-        tempo_changes.dedup();
+        tempo_changes.dedup_by(|a, b| {
+            if a.0 == b.0 && a.1 != b.1 {
+                panic!("Conflicting tempos at the same note stamp");
+            }
+            a == b
+        });
         (time_signature_changes, tempo_changes)
     }
 
+    /// Creates a helper from prepared timing-change sequences.
     fn new(time_signature_changes: Vec<(Notes, TimeSignature)>, tempo_changes: Vec<(Notes, Tempo)>) -> Self {
         Self {
             time_signature_changes,
             time_signature_index: 0,
-            tempo_changes,
+            _tempo_changes: tempo_changes,
             number_of_bars: Fraction::zero(),
             position_in_bar: Notes::zero(),
             note_stamp: Notes::zero(),
@@ -185,6 +219,7 @@ impl TimingHelper {
         }
     }
 
+    /// Builds a reusable timing helper from a parsed score.
     pub fn from_score(score: &LilyScore) -> Self {
         let (time_signature_changes, tempo_changes) = Self::extract_time_signature_and_tempo_changes(score);
         Self::new(time_signature_changes, tempo_changes)

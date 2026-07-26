@@ -1,5 +1,6 @@
 pub const NUMBER_OF_STRINGS: usize = 6;
 
+/// Parsed LilyPond score model used as the conversion input for the machine score.
 #[derive(Debug)]
 pub struct LilyScore {
     pub header: Option<Header>,
@@ -7,11 +8,13 @@ pub struct LilyScore {
     pub parts: [LilyPart; NUMBER_OF_STRINGS],
 }
 
+/// Score-wide musical settings.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Global {
     pub key: Option<Key>,
 }
 
+/// Tempo marking where `note_duration = bpm` (for example quarter note = 120).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Tempo {
     pub note_duration: NoteDuration,
@@ -27,11 +30,13 @@ impl Default for Tempo {
     }
 }
 
+/// Human-readable score metadata.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Header {
     pub title: Option<String>,
 }
 
+/// Conventional meter, e.g. `4/4` or `3/8`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeSignature {
     pub numerator: u8,
@@ -47,18 +52,21 @@ impl Default for TimeSignature {
     }
 }
 
+/// Tonality used by the piece.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Key {
     pub tonic: PitchClass,
     pub major: bool,
 }
 
+/// One performable part/voice.
 #[derive(Debug)]
 pub struct LilyPart {
     pub name: String,
     pub events: Vec<Event>,
 }
 
+/// Timeline event in a part.
 #[derive(Debug, Clone)]
 pub enum Event {
     Note(Note),
@@ -67,12 +75,16 @@ pub enum Event {
     Tempo(Tempo),
 }
 
+/// Tuplet ratio (`num` in the time of `den`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tuplet {
     pub num: u8,
     pub den: u8,
 }
 
+/// Musical duration relative to a whole note.
+///
+/// `ratio` is the denominator (`4` = quarter), `augmentation` is the number of dots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoteDuration {
     pub ratio: u16,
@@ -90,6 +102,7 @@ impl Default for NoteDuration {
     }
 }
 
+/// Pitched event.
 #[derive(Debug, Clone)]
 pub struct Note {
     pub class: PitchClass,
@@ -101,6 +114,7 @@ pub struct Note {
     pub crescendo: Option<Crescendo>,
 }
 
+/// Rest event.
 #[derive(Debug, Clone, Copy)]
 pub struct Rest {
     pub duration: Option<NoteDuration>,
@@ -109,6 +123,7 @@ pub struct Rest {
     pub crescendo: Option<Crescendo>,
 }
 
+/// Chromatic alteration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Accidental {
     DoubleFlat,
@@ -118,6 +133,7 @@ pub enum Accidental {
     DoubleSharp,
 }
 
+/// Articulation marking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Articulation {
     Tenuto,
@@ -127,6 +143,7 @@ pub enum Articulation {
     Marcato,
 }
 
+/// Crescendo hairpin marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Crescendo {
     CrescendoStart,
@@ -134,6 +151,7 @@ pub enum Crescendo {
     End,
 }
 
+/// Dynamic marking from very soft to very loud.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Dynamic {
     PPP,
@@ -147,6 +165,7 @@ pub enum Dynamic {
     FFF,
 }
 
+/// Diatonic pitch class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PitchClass {
     C,

@@ -1,5 +1,3 @@
-use core::panic;
-
 use fraction::Zero;
 use lilyparse::syntax::ast::{self, Crescendo, Dynamic, Event, LilyPart};
 
@@ -15,24 +13,28 @@ enum CrescendoKind {
     Decrescendo,
 }
 
+/// Dynamic interpolation range between two note positions.
 #[derive(Clone)]
 struct CrescendoBlock {
     start: CrescendoPoint,
     end: CrescendoPoint,
 }
 
+/// One sampled point on the dynamic timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct CrescendoPoint {
     time: Notes,
     dynamic: Dynamic,
 }
 
+/// Runtime helper that resolves note volumes, including hairpin interpolation.
 pub struct DynamicHelper {
     crescendo_blocks: Vec<CrescendoBlock>,
     crescendo_index: usize,
     dynamic: Dynamic,
 }
 
+/// Builder that scans one part and extracts crescendo/decrescendo blocks.
 pub struct DynamicBuilder<'a> {
     crescendo_blocks: Vec<CrescendoBlock>,
     crescendo_start: CrescendoPoint,
@@ -43,6 +45,7 @@ pub struct DynamicBuilder<'a> {
 }
 
 impl<'a> DynamicBuilder<'a> {
+    /// Infers a one-step target dynamic when no explicit end dynamic is given.
     fn infer_crescendo_end_dynamic(&mut self) -> Dynamic {
         match (self.crescendo_kind, self.crescendo_start.dynamic) {
             (CrescendoKind::Crescendo, Dynamic::PPP) => Dynamic::PP,
@@ -65,6 +68,7 @@ impl<'a> DynamicBuilder<'a> {
         }
     }
 
+    /// Closes the current block at the current note stamp.
     fn end_block(&mut self, dynamic: Dynamic) {
         let end = CrescendoPoint {
             time: self.note_stamp,
@@ -80,6 +84,7 @@ impl<'a> DynamicBuilder<'a> {
         self.crescendo_kind = CrescendoKind::None;
     }
 
+    /// Starts a new crescendo/decrescendo block.
     fn start_block(&mut self, crescendo: Crescendo) {
         self.crescendo_start = CrescendoPoint {
             time: self.note_stamp,
@@ -93,12 +98,13 @@ impl<'a> DynamicBuilder<'a> {
         }
     }
 
+    /// Ends the active block when an explicit end cue is encountered.
     fn check_for_crescendo_end(&mut self, event: &Event) {
         if self.crescendo_kind == CrescendoKind::None {
             return;
-        };
+        }
 
-        if let Event::Note(note) = &event {
+        if let Event::Note(note) = event {
             if let Some(dynamic) = note.dynamic {
                 self.end_block(dynamic);
             } else if note.crescendo.is_some() {
@@ -108,12 +114,13 @@ impl<'a> DynamicBuilder<'a> {
         }
     }
 
+    /// Starts a block when no block is currently active.
     fn check_for_crescendo_start(&mut self, event: &Event) {
         if self.crescendo_kind != CrescendoKind::None {
             return;
-        };
+        }
 
-        if let Event::Note(note) = &event {
+        if let Event::Note(note) = event {
             if let Some(crescendo) = note.crescendo
                 && crescendo != Crescendo::End
             {
@@ -122,6 +129,7 @@ impl<'a> DynamicBuilder<'a> {
         }
     }
 
+    /// Creates a builder for one part scan.
     fn new(part: &'a LilyPart) -> Self {
         Self {
             crescendo_blocks: Vec::new(),
@@ -133,6 +141,7 @@ impl<'a> DynamicBuilder<'a> {
         }
     }
 
+    /// Updates running state from the current timeline event.
     fn update_state(&mut self, timed_event: &TimedEvent) {
         let TimedEvent { event, note_stamp } = timed_event;
 
@@ -144,6 +153,7 @@ impl<'a> DynamicBuilder<'a> {
         }
     }
 
+    /// Scans the whole part and captures crescendo blocks.
     fn init(&mut self) {
         let timed_events = TimingHelper::get_timed_events(self.part);
 
@@ -152,8 +162,14 @@ impl<'a> DynamicBuilder<'a> {
             self.check_for_crescendo_end(&timed_event.event);
             self.check_for_crescendo_start(&timed_event.event);
         }
+
+        if self.crescendo_kind != CrescendoKind::None {
+            let inferred_end = self.infer_crescendo_end_dynamic();
+            self.end_block(inferred_end);
+        }
     }
 
+    /// Builds a dynamic helper from one LilyPond part.
     pub fn build(part: &'a LilyPart) -> DynamicHelper {
         let mut builder = Self::new(part);
         builder.init();
@@ -167,6 +183,7 @@ impl<'a> DynamicBuilder<'a> {
 }
 
 impl DynamicHelper {
+    /// Maps textual dynamics to a linear MIDI-volume scale.
     fn dynamic_to_fraction(dynamic: Dynamic) -> Fraction {
         match dynamic {
             Dynamic::PPP => 1 * 128 / 8,
@@ -181,43 +198,57 @@ impl DynamicHelper {
         .into()
     }
 
+    /// Converts fraction volume to a bounded MIDI value.
     fn fraction_to_volume(fraction: Fraction) -> MidiVolume {
-        if !(fraction > Fraction::zero()) {
+        if fraction < Fraction::zero() {
             panic!("fraction cannot be negative");
         }
 
-        let num = *fraction.trunc().numer().unwrap();
-        if num >= 128 {
+        let num = *fraction.trunc().numer().expect("fraction has a numerator");
+        if num > u32::from(MidiVolume::MAX_VALUE) {
             panic!("value outside of allowed range");
         }
 
-        MidiVolume { volume: num as u8 }
+        MidiVolume::new(num as u8)
     }
 
+    /// Resolves a plain dynamic marking directly to MIDI volume.
     fn dynamic_to_volume(dynamic: Dynamic) -> MidiVolume {
         Self::fraction_to_volume(Self::dynamic_to_fraction(dynamic))
     }
 
+    /// Returns the volume for the next note at `timing.note_stamp`.
     pub fn next_note(&mut self, note: &ast::Note, timing: &NoteTimingInfo) -> MidiVolume {
         if let Some(dynamic) = note.dynamic {
             self.dynamic = dynamic;
             return Self::dynamic_to_volume(dynamic);
         }
 
+        while self.crescendo_index < self.crescendo_blocks.len() {
+            let block = &self.crescendo_blocks[self.crescendo_index];
+            if timing.note_stamp >= block.end.time {
+                self.dynamic = block.end.dynamic;
+                self.crescendo_index += 1;
+                continue;
+            }
+            break;
+        }
+
         if self.crescendo_index < self.crescendo_blocks.len() {
             let crescendo_block = &self.crescendo_blocks[self.crescendo_index];
-            if crescendo_block.start.time < timing.note_stamp {
+            if timing.note_stamp >= crescendo_block.start.time && timing.note_stamp < crescendo_block.end.time {
                 let y1 = Self::dynamic_to_fraction(crescendo_block.start.dynamic);
                 let y2 = Self::dynamic_to_fraction(crescendo_block.end.dynamic);
                 let x1 = crescendo_block.start.time;
                 let x2 = crescendo_block.end.time;
                 let x = timing.note_stamp;
 
+                // Linear interpolation of dynamic value inside the active block.
                 let fraction = (x - x1) / (x2 - x1) * (y2 - y1) + y1;
                 return Self::fraction_to_volume(fraction);
             }
         }
 
-        return Self::dynamic_to_volume(self.dynamic);
+        Self::dynamic_to_volume(self.dynamic)
     }
 }
