@@ -289,7 +289,7 @@ mod tests {
             octave: 0,
             duration,
             dynamic,
-            articulation: Some(Articulation::Portato),
+            articulation: Articulation::Portato,
             crescendo,
             tie: false,
         }
@@ -299,7 +299,7 @@ mod tests {
         Rest {
             duration,
             dynamic,
-            articulation: None,
+            articulation: Articulation::none(),
             crescendo,
             multiplier: None,
         }

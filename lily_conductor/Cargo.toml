@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 lilyparse = { path = "../lilyparse" }
+protocol = { path = "../protocol" }
 fraction = "0.15"

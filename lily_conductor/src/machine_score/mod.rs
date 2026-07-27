@@ -1,4 +1,6 @@
-use lilyparse::syntax::ast::{self, Articulation, Event, LilyPart, LilyScore, Rest};
+use std::panic;
+
+use lilyparse::syntax::ast::{self, Articulation, Event, LilyPart, LilyScore, Rest, Tempo};
 use timing::TimingHelper;
 
 use crate::machine_score::{
@@ -76,6 +78,7 @@ pub enum FingerTechnique {
 pub struct MachineScore {
     pub title: String,
     pub parts: [MachineScorePart; 6],
+    pub tempo_changes: Vec<(Notes, Tempo)>,
 }
 
 /// Converted events for one part/string.
@@ -112,12 +115,18 @@ impl<'a> LilyPartConverter<'a> {
 
     /// Maps articulation marks to hardware techniques.
     fn current_technique(&self) -> (PluckTechnique, FingerTechnique) {
-        match self.articulation {
-            Articulation::Tenuto => (PluckTechnique::Soft, FingerTechnique::Quiet),
-            Articulation::Portato => (PluckTechnique::Soft, FingerTechnique::Loud),
-            Articulation::Staccato => (PluckTechnique::Hard, FingerTechnique::Quiet),
-            Articulation::Staccatissimo => (PluckTechnique::Hard, FingerTechnique::Loud),
-            Articulation::Marcato => (PluckTechnique::None, FingerTechnique::Loud),
+        if self.articulation.contains(Articulation::Portato) {
+            (PluckTechnique::Soft, FingerTechnique::Loud)
+        } else if self.articulation.contains(Articulation::Staccato) {
+            (PluckTechnique::Hard, FingerTechnique::Quiet)
+        } else if self.articulation.contains(Articulation::Portato) {
+            (PluckTechnique::Soft, FingerTechnique::Quiet)
+        } else if self.articulation.contains(Articulation::Staccatissimo) {
+            (PluckTechnique::Hard, FingerTechnique::Loud)
+        } else if self.articulation.contains(Articulation::Marcato) {
+            (PluckTechnique::None, FingerTechnique::Loud)
+        } else {
+            panic!("Articulation should never be none")
         }
     }
 
@@ -162,8 +171,8 @@ impl<'a> LilyPartConverter<'a> {
 
     /// Converts one LilyPond note event.
     fn process_note(&mut self, note: &ast::Note) {
-        if let Some(articulation) = note.articulation {
-            self.articulation = articulation;
+        if !note.articulation.is_none() {
+            self.articulation = note.articulation;
         }
 
         let timing_info = self.timing_helper.next_note(note);
@@ -228,6 +237,7 @@ impl MachineScore {
         Self {
             title: score_title,
             parts,
+            tempo_changes: timing_helper.get_tempo_changes(),
         }
     }
 }
@@ -242,7 +252,7 @@ mod tests {
         octave: i8,
         duration: Option<NoteDuration>,
         dynamic: Option<Dynamic>,
-        articulation: Option<Articulation>,
+        articulation: Articulation,
         crescendo: Option<Crescendo>,
     ) -> LilyNote {
         LilyNote {
@@ -261,7 +271,7 @@ mod tests {
         Rest {
             duration,
             dynamic,
-            articulation: None,
+            articulation: Articulation::none(),
             crescendo: None,
             multiplier: None,
         }
@@ -297,13 +307,15 @@ mod tests {
     #[test]
     fn converts_lily_notes_to_midi_pitch() {
         assert_eq!(
-            LilyPartConverter::note_to_midi_pitch(&lily_note(PitchClass::C, 0, None, None, None, None,)),
+            LilyPartConverter::note_to_midi_pitch(
+                &lily_note(PitchClass::C, 0, None, None, Articulation::none(), None,)
+            ),
             MidiPitch { pitch: 48 }
         );
         assert_eq!(
             LilyPartConverter::note_to_midi_pitch(&LilyNote {
                 accidental: Accidental::Sharp,
-                ..lily_note(PitchClass::F, 1, None, None, None, None)
+                ..lily_note(PitchClass::F, 1, None, None, Articulation::none(), None)
             }),
             MidiPitch { pitch: 66 }
         );
@@ -325,7 +337,7 @@ mod tests {
                     tuplet: None,
                 }),
                 Some(Dynamic::MF),
-                Some(Articulation::Tenuto),
+                Articulation::Tenuto,
                 None,
             )),
             Event::Rest(lily_rest(
@@ -336,14 +348,7 @@ mod tests {
                 }),
                 Some(Dynamic::P),
             )),
-            Event::Note(lily_note(
-                PitchClass::D,
-                0,
-                None,
-                None,
-                Some(Articulation::Staccato),
-                None,
-            )),
+            Event::Note(lily_note(PitchClass::D, 0, None, None, Articulation::Staccato, None)),
         ]);
 
         let machine_score = MachineScore::from_lilyscore(score);
@@ -389,7 +394,7 @@ mod tests {
                         0,
                         quarter,
                         Some(Dynamic::MF),
-                        None,
+                        Articulation::none(),
                         None,
                     ))],
                 },
@@ -400,7 +405,7 @@ mod tests {
                         0,
                         quarter,
                         Some(Dynamic::MF),
-                        None,
+                        Articulation::none(),
                         None,
                     ))],
                 },

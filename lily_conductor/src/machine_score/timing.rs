@@ -46,7 +46,7 @@ pub struct TimedEvent {
 pub struct TimingHelper {
     time_signature_changes: Vec<(Notes, TimeSignature)>,
     time_signature_index: usize,
-    _tempo_changes: Vec<(Notes, Tempo)>,
+    tempo_changes: Vec<(Notes, Tempo)>,
     number_of_bars: Fraction,
     position_in_bar: Notes,
     note_stamp: Notes,
@@ -66,6 +66,10 @@ pub struct NoteTimingInfo {
 }
 
 impl TimingHelper {
+    pub fn get_tempo_changes(self) -> Vec<(Notes, Tempo)> {
+        self.tempo_changes
+    }
+
     /// Applies any time-signature changes scheduled for the current note stamp.
     fn apply_pending_time_signature_changes(&mut self) {
         while self.time_signature_changes.len() > self.time_signature_index {
@@ -231,7 +235,7 @@ impl TimingHelper {
         Self {
             time_signature_changes,
             time_signature_index: 0,
-            _tempo_changes: tempo_changes,
+            tempo_changes,
             number_of_bars: Fraction::zero(),
             position_in_bar: Notes::zero(),
             note_stamp: Notes::zero(),
@@ -251,7 +255,7 @@ impl TimingHelper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lilyparse::syntax::ast::{Accidental, Dynamic, Note, PitchClass, Tuplet};
+    use lilyparse::syntax::ast::{Accidental, Articulation, Dynamic, Note, PitchClass, Tuplet};
 
     fn note(duration: Option<NoteDuration>) -> Note {
         Note {
@@ -260,7 +264,7 @@ mod tests {
             octave: 0,
             duration,
             dynamic: Some(Dynamic::MF),
-            articulation: None,
+            articulation: Articulation::none(),
             crescendo: None,
             tie: false,
         }
@@ -320,7 +324,7 @@ mod tests {
             Event::Rest(Rest {
                 duration: None,
                 dynamic: None,
-                articulation: None,
+                articulation: Articulation::none(),
                 crescendo: None,
                 multiplier: None,
             }),

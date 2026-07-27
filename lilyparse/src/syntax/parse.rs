@@ -44,6 +44,7 @@ fn articulation(input: &mut &str) -> Result<Articulation> {
             '-'.value(Articulation::Tenuto),
             '_'.value(Articulation::Portato),
             '^'.value(Articulation::Marcato),
+            '>'.value(Articulation::Accent),
         )),
     )
     .context(Label("Articulation"))
@@ -151,18 +152,18 @@ fn modifier(input: &mut &str) -> Result<Modifier> {
     .parse_next(input)
 }
 
-fn modifiers(input: &mut &str) -> Result<(Option<Dynamic>, Option<Articulation>, Option<Crescendo>, bool)> {
+fn modifiers(input: &mut &str) -> Result<(Option<Dynamic>, Articulation, Option<Crescendo>, bool)> {
     let mods: Vec<Modifier> = repeat(0.., modifier).parse_next(input)?;
 
     let mut dynamic = None;
-    let mut articulation = None;
+    let mut articulation = Articulation::none();
     let mut crescendo = None;
     let mut tie = false;
 
     for m in mods {
         match m {
             Modifier::Dynamic(d) => dynamic = Some(d),
-            Modifier::Articulation(a) => articulation = Some(a),
+            Modifier::Articulation(a) => articulation |= a,
             Modifier::Crescendo(a) => crescendo = Some(a),
             Modifier::Tie => tie = true,
         }
@@ -665,7 +666,7 @@ fn parses_full_score() {
     match &score.parts[0].events[2] {
         Event::Note(note) => {
             assert_eq!(note.dynamic, Some(Dynamic::MF));
-            assert_eq!(note.articulation, Some(Articulation::Staccato));
+            assert_eq!(note.articulation, Articulation::Staccato);
             assert_eq!(note.crescendo, Some(Crescendo::CrescendoStart));
         }
         _ => panic!("expected note"),
@@ -674,7 +675,7 @@ fn parses_full_score() {
     match &score.parts[0].events[3] {
         Event::Note(note) => {
             assert_eq!(note.dynamic, Some(Dynamic::F));
-            assert_eq!(note.articulation, Some(Articulation::Portato));
+            assert_eq!(note.articulation, Articulation::Portato);
             assert_eq!(note.crescendo, Some(Crescendo::DecrescendoStart));
         }
         _ => panic!("expected note"),

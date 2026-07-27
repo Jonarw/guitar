@@ -1,3 +1,4 @@
+use bitmask_enum::bitmask;
 pub const NUMBER_OF_STRINGS: usize = 6;
 
 /// Parsed LilyPond score model used as the conversion input for the machine score.
@@ -118,7 +119,7 @@ pub struct Note {
     pub octave: i8,
     pub duration: Option<NoteDuration>,
     pub dynamic: Option<Dynamic>,
-    pub articulation: Option<Articulation>,
+    pub articulation: Articulation,
     pub crescendo: Option<Crescendo>,
     pub tie: bool,
 }
@@ -128,7 +129,7 @@ pub struct Note {
 pub struct Rest {
     pub duration: Option<NoteDuration>,
     pub dynamic: Option<Dynamic>,
-    pub articulation: Option<Articulation>,
+    pub articulation: Articulation,
     pub crescendo: Option<Crescendo>,
     pub multiplier: Option<RestMultiplier>,
 }
@@ -144,13 +145,14 @@ pub enum Accidental {
 }
 
 /// Articulation marking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[bitmask]
 pub enum Articulation {
     Tenuto,
     Portato,
     Staccato,
     Staccatissimo,
     Marcato,
+    Accent,
 }
 
 /// Crescendo hairpin marker.
