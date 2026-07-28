@@ -7,3 +7,5 @@ edition = "2024"
 lilyparse = { path = "../lilyparse" }
 protocol = { path = "../protocol" }
 fraction = "0.15"
+serialport = { version = "4", default-features = false }
+anyhow = "1"

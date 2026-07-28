@@ -1,4 +1,5 @@
 pub mod machine_score;
+pub mod playback;
 
 use std::{env, fs, process::ExitCode};
 

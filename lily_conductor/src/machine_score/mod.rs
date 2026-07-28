@@ -119,7 +119,7 @@ impl<'a> LilyPartConverter<'a> {
             (PluckTechnique::Soft, FingerTechnique::Loud)
         } else if self.articulation.contains(Articulation::Staccato) {
             (PluckTechnique::Hard, FingerTechnique::Quiet)
-        } else if self.articulation.contains(Articulation::Portato) {
+        } else if self.articulation.contains(Articulation::Tenuto) {
             (PluckTechnique::Soft, FingerTechnique::Quiet)
         } else if self.articulation.contains(Articulation::Staccatissimo) {
             (PluckTechnique::Hard, FingerTechnique::Loud)
