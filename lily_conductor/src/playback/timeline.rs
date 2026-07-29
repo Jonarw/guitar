@@ -2,8 +2,9 @@ use fraction::Zero;
 use lilyparse::syntax::ast::Tempo;
 use protocol::{Fret, GuitarString, Message};
 
+use crate::machine_score::dynamic::{StringVolumeRange, StringVolumeTable};
 use crate::machine_score::timing::Notes;
-use crate::machine_score::{FingerTechnique, MachineScore, MidiVolume, Note};
+use crate::machine_score::{FingerTechnique, MachineScore, Note};
 
 /// Guitar string configuration: (string enum, open-string MIDI pitch, max controllable frets).
 ///
@@ -107,11 +108,6 @@ pub fn midi_pitch_to_fret(pitch_value: u8, open_pitch: u8, max_frets: u8) -> Fre
     fret_from_number(fret_num)
 }
 
-/// Scales a MIDI velocity (0–127) to the hardware `PluckVolume` range (0–255).
-fn midi_volume_to_pluck_volume(v: MidiVolume) -> u8 {
-    (v.volume as u16 * 255 / MidiVolume::MAX_VALUE as u16) as u8
-}
-
 /// Returns the fret-preparation delay in ms for a given finger technique.
 fn fret_prep_ms(technique: FingerTechnique) -> u64 {
     match technique {
@@ -171,7 +167,7 @@ impl CommandTimeline {
     ///
     /// Per-note command ordering:
     /// 1. `FretQuiet` / `FretFast` at `start_ms − fret_prep` (skipped for open strings)
-    /// 2. `PluckVolume` at `start_ms` (only when volume changes)
+    /// 2. `PluckVolume` shortly before `Pluck` (only when volume changes)
     /// 3. `Pluck` at `start_ms`
     /// 4. If the *next* note on this string starts immediately:
     ///    - No `Dampen`
@@ -182,6 +178,12 @@ impl CommandTimeline {
     ///    - `Unfret` at `end_ms + DAMPEN_SETTLE_MS`, but brought forward to just before the
     ///      next note's fret command whenever the next fret has a lower ordinal
     pub fn from_machine_score(score: &MachineScore) -> Self {
+        Self::from_machine_score_with_volume_table(score, &StringVolumeTable::default())
+    }
+
+    /// Converts a [`MachineScore`] into a command timeline with per-string
+    /// runtime-calibrated pluck-volume ranges.
+    pub fn from_machine_score_with_volume_table(score: &MachineScore, volume_table: &StringVolumeTable) -> Self {
         let mut commands: Vec<TimedCommand> = Vec::new();
 
         // --- Prologue -----------------------------------------------------------
@@ -202,11 +204,13 @@ impl CommandTimeline {
 
         for (part_idx, part) in score.parts.iter().enumerate() {
             let (guitar_string, open_pitch, max_frets) = STRING_CONFIGS[part_idx];
+            let volume_range = volume_table.range_for_part(part_idx);
             Self::build_string_commands(
                 &mut commands,
                 guitar_string,
                 open_pitch,
                 max_frets,
+                volume_range,
                 &part.notes,
                 tempo_changes,
                 &mut score_end_ms,
@@ -230,6 +234,7 @@ impl CommandTimeline {
         guitar_string: GuitarString,
         open_pitch: u8,
         max_frets: u8,
+        volume_range: StringVolumeRange,
         notes: &[Note],
         tempo_changes: &[(Notes, Tempo)],
         score_end_ms: &mut u64,
@@ -259,7 +264,7 @@ impl CommandTimeline {
             }
 
             // --- Volume (only when it changes) ----------------------------------
-            let pluck_vol = midi_volume_to_pluck_volume(note.volume);
+            let pluck_vol = volume_range.map_midi_volume(note.volume);
             if last_pluck_volume != Some(pluck_vol) {
                 // Issue PluckVolume PLUCK_VOLUME_PREP_MS before the pluck so the hardware
                 // has time to apply it.  If the previous pluck was closer than that, place
@@ -443,7 +448,11 @@ mod tests {
             class: pitch,
             accidental: Accidental::None,
             octave,
-            duration: Some(NoteDuration { ratio, augmentation: 0, tuplet: None }),
+            duration: Some(NoteDuration {
+                ratio,
+                augmentation: 0,
+                tuplet: None,
+            }),
             dynamic: Some(dynamic),
             articulation,
             crescendo: None,
@@ -459,14 +468,23 @@ mod tests {
     ) -> crate::machine_score::MachineScore {
         use crate::machine_score::{MachineScore, MachineScorePart};
         fn empty(name: &str) -> MachineScorePart {
-            MachineScorePart { name: name.to_owned(), notes: vec![] }
+            MachineScorePart {
+                name: name.to_owned(),
+                notes: vec![],
+            }
         }
         MachineScore {
             title: "Test".to_owned(),
             parts: [
-                MachineScorePart { name: "stringOne".to_owned(), notes },
-                empty("stringTwo"), empty("stringThree"),
-                empty("stringFour"), empty("stringFive"), empty("stringSix"),
+                MachineScorePart {
+                    name: "stringOne".to_owned(),
+                    notes,
+                },
+                empty("stringTwo"),
+                empty("stringThree"),
+                empty("stringFour"),
+                empty("stringFive"),
+                empty("stringSix"),
             ],
             tempo_changes,
         }
@@ -511,8 +529,8 @@ mod tests {
 
     #[test]
     fn pluck_volume_issued_before_pluck_by_prep_delay() {
-        use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
         use crate::machine_score::timing::Fraction;
+        use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
         // Single note: PluckVolume should be at start_ms - PLUCK_VOLUME_PREP_MS.
         let note = Note {
             pitch: MidiPitch::new(45), // Fret5 on E string
@@ -524,10 +542,14 @@ mod tests {
         };
         let ms = CommandTimeline::from_machine_score(&make_machine_score(vec![note], vec![]));
 
-        let vol_cmd = ms.commands.iter()
+        let vol_cmd = ms
+            .commands
+            .iter()
             .find(|c| matches!(c.message, Message::PluckVolume(GuitarString::E, _)))
             .expect("PluckVolume missing");
-        let pluck_cmd = ms.commands.iter()
+        let pluck_cmd = ms
+            .commands
+            .iter()
             .find(|c| matches!(c.message, Message::Pluck(GuitarString::E)))
             .expect("Pluck missing");
 
@@ -536,13 +558,20 @@ mod tests {
 
     #[test]
     fn pluck_volume_at_midpoint_when_plucks_are_close() {
-        use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
         use crate::machine_score::timing::Fraction;
+        use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
         use lilyparse::syntax::ast::{NoteDuration, Tempo};
         // Tempo: quarter = 3000 BPM → 20 ms per quarter note.
         // Notes 1 and 2 are immediately consecutive → pluck gap = 20 ms < PLUCK_VOLUME_PREP_MS.
         // PluckVolume for note 2 must be at the midpoint between the two plucks.
-        let fast_tempo = Tempo { note_duration: NoteDuration { ratio: 4, augmentation: 0, tuplet: None }, bpm: 3000 };
+        let fast_tempo = Tempo {
+            note_duration: NoteDuration {
+                ratio: 4,
+                augmentation: 0,
+                tuplet: None,
+            },
+            bpm: 3000,
+        };
         let note1 = Note {
             pitch: MidiPitch::new(45),
             volume: MidiVolume::new(64),
@@ -560,22 +589,68 @@ mod tests {
             finger_technique: FingerTechnique::Quiet,
         };
         let tempo_changes = vec![(Fraction::new(0u32, 1u32), fast_tempo)];
-        let ms = CommandTimeline::from_machine_score(
-            &make_machine_score(vec![note1, note2], tempo_changes),
-        );
+        let ms = CommandTimeline::from_machine_score(&make_machine_score(vec![note1, note2], tempo_changes));
 
         // Pluck 1 at INIT_DELAY_MS, pluck 2 at INIT_DELAY_MS + 20ms.
         let pluck1_ms = INIT_DELAY_MS;
         let pluck2_ms = INIT_DELAY_MS + 20;
         let expected_vol2_ms = (pluck1_ms + pluck2_ms) / 2;
 
-        let vol_cmds: Vec<_> = ms.commands.iter()
+        let vol_cmds: Vec<_> = ms
+            .commands
+            .iter()
             .filter(|c| matches!(c.message, Message::PluckVolume(GuitarString::E, _)))
             .collect();
         // Two PluckVolume commands: one for note1 (at start - prep) and one for note2 (midpoint).
         assert_eq!(vol_cmds.len(), 2, "expected two PluckVolume commands");
-        assert_eq!(vol_cmds[1].time_ms, expected_vol2_ms,
-            "second PluckVolume should be at midpoint ({expected_vol2_ms}ms)");
+        assert_eq!(
+            vol_cmds[1].time_ms, expected_vol2_ms,
+            "second PluckVolume should be at midpoint ({expected_vol2_ms}ms)"
+        );
+    }
+
+    #[test]
+    fn pluck_volume_uses_calibrated_string_range() {
+        use crate::machine_score::dynamic::{StringVolumeRange, StringVolumeTable};
+        use crate::machine_score::timing::Fraction;
+        use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
+
+        let volume_table = StringVolumeTable {
+            ranges: [StringVolumeRange { min: 149, max: 220 }; 6],
+        };
+
+        let note1 = Note {
+            pitch: MidiPitch::new(45),
+            volume: MidiVolume::new(0),
+            length: Fraction::new(1u32, 4u32),
+            start: Fraction::new(0u32, 1u32),
+            pluck_technique: PluckTechnique::Hard,
+            finger_technique: FingerTechnique::Quiet,
+        };
+        let note2 = Note {
+            pitch: MidiPitch::new(45),
+            volume: MidiVolume::new(127),
+            length: Fraction::new(1u32, 4u32),
+            start: Fraction::new(1u32, 4u32),
+            pluck_technique: PluckTechnique::Hard,
+            finger_technique: FingerTechnique::Quiet,
+        };
+
+        let timeline = CommandTimeline::from_machine_score_with_volume_table(
+            &make_machine_score(vec![note1, note2], vec![]),
+            &volume_table,
+        );
+
+        let volumes: Vec<u8> = timeline
+            .commands
+            .iter()
+            .filter_map(|c| match c.message {
+                Message::PluckVolume(GuitarString::E, v) => Some(v.volume()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(volumes, vec![149, 220]);
     }
 
     #[test]

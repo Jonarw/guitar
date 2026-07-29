@@ -1,10 +1,164 @@
 use fraction::Zero;
-use lilyparse::syntax::ast::{self, Crescendo, Dynamic, Event, LilyPart, Rest};
+use lilyparse::syntax::ast::{self, Articulation, Crescendo, Dynamic, Event, LilyPart, Rest, TimeSignature};
 
 use crate::machine_score::{
     MidiVolume,
     timing::{Fraction, NoteTimingInfo, Notes, TimedEvent, TimingHelper},
 };
+
+// ---------------------------------------------------------------------------
+// Beat stress classification
+// ---------------------------------------------------------------------------
+
+/// Metric stress level for a note's position within its bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeatStress {
+    Primary,
+    Secondary,
+    Regular,
+}
+
+/// Returns the stress level for a position within a bar, according to the
+/// conventions of the most common time signatures.
+///
+/// Position is measured in whole notes from the start of the bar.
+pub fn beat_stress(position_in_bar: Notes, time_signature: TimeSignature) -> BeatStress {
+    // Quantise the position to a beat number (0-based) using the denominator.
+    let beat_length = Fraction::new(1u32, u32::from(time_signature.denominator));
+    let beat = if beat_length == Fraction::zero() {
+        0u32
+    } else {
+        let b = position_in_bar / beat_length;
+        *b.trunc().numer().unwrap_or(&0)
+    };
+
+    match (time_signature.numerator, time_signature.denominator) {
+        // Simple duple: primary on 1
+        (2, _) => match beat % 2 {
+            0 => BeatStress::Primary,
+            _ => BeatStress::Regular,
+        },
+        // Simple triple: primary on 1, rest regular
+        (3, _) => match beat {
+            0 => BeatStress::Primary,
+            _ => BeatStress::Regular,
+        },
+        // Simple quadruple: primary on 1, secondary on 3
+        (4, _) => match beat % 4 {
+            0 => BeatStress::Primary,
+            2 => BeatStress::Secondary,
+            _ => BeatStress::Regular,
+        },
+        // Compound duple (6/x): two compound beats; first is primary
+        (6, _) => match beat % 6 {
+            0 => BeatStress::Primary,
+            3 => BeatStress::Secondary,
+            _ => BeatStress::Regular,
+        },
+        // Compound triple (9/x): three compound beats; first is primary
+        (9, _) => match beat % 9 {
+            0 => BeatStress::Primary,
+            3 | 6 => BeatStress::Secondary,
+            _ => BeatStress::Regular,
+        },
+        // Compound quadruple (12/x): four compound beats; primary + secondary on 1 & 3
+        (12, _) => match beat % 12 {
+            0 => BeatStress::Primary,
+            3 | 9 => BeatStress::Secondary,
+            6 => BeatStress::Secondary,
+            _ => BeatStress::Regular,
+        },
+        // 5/x: primary on 1; secondary conventions vary, use beat 3 (common 3+2 grouping)
+        (5, _) => match beat % 5 {
+            0 => BeatStress::Primary,
+            3 => BeatStress::Secondary,
+            _ => BeatStress::Regular,
+        },
+        // 7/x: primary on 1; secondary on beats 2 and 5 (4+3 grouping)
+        (7, _) => match beat % 7 {
+            0 => BeatStress::Primary,
+            2 | 5 => BeatStress::Secondary,
+            _ => BeatStress::Regular,
+        },
+        // Fallback: first beat is primary, all others are regular
+        _ => match beat {
+            0 => BeatStress::Primary,
+            _ => BeatStress::Regular,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic configuration
+// ---------------------------------------------------------------------------
+
+/// Additive MIDI-volume boosts applied on top of the base dynamic.
+/// All values are in the same 0–127 MIDI-volume scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DynamicConfig {
+    /// Boost applied to notes carrying an `Accent` articulation.
+    pub accent_boost: u8,
+    /// Boost applied to notes on the primary stressed beat of the bar.
+    pub primary_beat_boost: u8,
+    /// Boost applied to notes on the secondary stressed beat of the bar.
+    pub secondary_beat_boost: u8,
+}
+
+impl Default for DynamicConfig {
+    fn default() -> Self {
+        Self {
+            accent_boost: 15,
+            primary_beat_boost: 10,
+            secondary_beat_boost: 5,
+        }
+    }
+}
+
+/// Calibrated pluck-volume range for one string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StringVolumeRange {
+    pub min: u8,
+    pub max: u8,
+}
+
+impl StringVolumeRange {
+    /// Maps MIDI volume (`0..=127`) into this string's calibrated pluck-volume range.
+    pub fn map_midi_volume(&self, volume: MidiVolume) -> u8 {
+        assert!(self.min <= self.max, "StringVolumeRange min must be <= max");
+        let span = u16::from(self.max - self.min);
+        let mapped = u16::from(self.min)
+            + (u16::from(volume.volume) * span) / u16::from(MidiVolume::MAX_VALUE);
+        mapped as u8
+    }
+}
+
+/// Runtime table of calibrated pluck-volume ranges, one per guitar string/part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StringVolumeTable {
+    pub ranges: [StringVolumeRange; 6],
+}
+
+impl StringVolumeTable {
+    /// Returns the calibrated range for a score part index (`0..=5`).
+    pub fn range_for_part(&self, part_index: usize) -> StringVolumeRange {
+        *self
+            .ranges
+            .get(part_index)
+            .expect("part index outside of 0..=5 for StringVolumeTable")
+    }
+}
+
+impl Default for StringVolumeTable {
+    fn default() -> Self {
+        // Defaults preserve current behaviour until manual calibration values are provided.
+        let full = StringVolumeRange { min: 0, max: 255 };
+        Self { ranges: [full; 6] }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Crescendo state
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrescendoKind {
@@ -27,11 +181,16 @@ struct CrescendoPoint {
     dynamic: Dynamic,
 }
 
+// ---------------------------------------------------------------------------
+// DynamicHelper
+// ---------------------------------------------------------------------------
+
 /// Runtime helper that resolves note volumes, including hairpin interpolation.
 pub struct DynamicHelper {
     crescendo_blocks: Vec<CrescendoBlock>,
     crescendo_index: usize,
     dynamic: Dynamic,
+    config: DynamicConfig,
 }
 
 /// Builder that scans one part and extracts crescendo/decrescendo blocks.
@@ -188,6 +347,11 @@ impl<'a> DynamicBuilder<'a> {
 
     /// Builds a dynamic helper from one LilyPond part.
     pub fn build(part: &'a LilyPart) -> DynamicHelper {
+        Self::build_with_config(part, DynamicConfig::default())
+    }
+
+    /// Builds a dynamic helper from one LilyPond part with a custom config.
+    pub fn build_with_config(part: &'a LilyPart, config: DynamicConfig) -> DynamicHelper {
         let mut builder = Self::new(part);
         builder.init();
 
@@ -195,6 +359,7 @@ impl<'a> DynamicBuilder<'a> {
             crescendo_blocks: builder.crescendo_blocks,
             crescendo_index: 0,
             dynamic: Dynamic::default(),
+            config,
         }
     }
 }
@@ -202,7 +367,7 @@ impl<'a> DynamicBuilder<'a> {
 impl DynamicHelper {
     /// Maps textual dynamics to a linear MIDI-volume scale.
     fn dynamic_to_fraction(dynamic: Dynamic) -> Fraction {
-        match dynamic {
+        let value: u32 = match dynamic {
             Dynamic::PPP => 1 * 128 / 8,
             Dynamic::PP => 2 * 128 / 8,
             Dynamic::P => 3 * 128 / 8,
@@ -210,9 +375,9 @@ impl DynamicHelper {
             Dynamic::MF => 5 * 128 / 8,
             Dynamic::F => 6 * 128 / 8,
             Dynamic::FF => 7 * 128 / 8,
-            Dynamic::FFF => 8 * 128 / 8,
-        }
-        .into()
+            Dynamic::FFF => 127, // 8*128/8 = 128 would exceed MAX_VALUE
+        };
+        value.into()
     }
 
     /// Converts fraction volume to a bounded MIDI value.
@@ -243,6 +408,26 @@ impl DynamicHelper {
 
     /// Returns the volume for the next note at `timing.note_stamp`.
     pub fn next_note(&mut self, note: &ast::Note, timing: &NoteTimingInfo) -> MidiVolume {
+        let base_volume = self.base_volume(note, timing);
+
+        // Additive boosts — clamped to MAX_VALUE.
+        let mut boost: u16 = 0;
+        if note.articulation.contains(Articulation::Accent) {
+            boost += u16::from(self.config.accent_boost);
+        }
+        boost += match beat_stress(timing.position_in_bar, timing.time_signature) {
+            BeatStress::Primary => u16::from(self.config.primary_beat_boost),
+            BeatStress::Secondary => u16::from(self.config.secondary_beat_boost),
+            BeatStress::Regular => 0,
+        };
+
+        let boosted = (u16::from(base_volume.volume) + boost).min(u16::from(MidiVolume::MAX_VALUE));
+        MidiVolume::new(boosted as u8)
+    }
+
+    /// Resolves the base volume from dynamic markings and crescendo interpolation,
+    /// without applying articulation or beat-stress boosts.
+    fn base_volume(&mut self, note: &ast::Note, timing: &NoteTimingInfo) -> MidiVolume {
         if let Some(dynamic) = note.dynamic {
             self.dynamic = dynamic;
             return Self::dynamic_to_volume(dynamic);
@@ -280,7 +465,15 @@ impl DynamicHelper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lilyparse::syntax::ast::{Accidental, Articulation, Note, NoteDuration, PitchClass};
+    use lilyparse::syntax::ast::{Accidental, Articulation, Note, NoteDuration, PitchClass, TimeSignature};
+
+    fn no_boost() -> DynamicConfig {
+        DynamicConfig {
+            accent_boost: 0,
+            primary_beat_boost: 0,
+            secondary_beat_boost: 0,
+        }
+    }
 
     fn note(duration: Option<NoteDuration>, dynamic: Option<Dynamic>, crescendo: Option<Crescendo>) -> Note {
         Note {
@@ -291,6 +484,23 @@ mod tests {
             dynamic,
             articulation: Articulation::Portato,
             crescendo,
+            tie: false,
+        }
+    }
+
+    fn note_with_articulation(
+        duration: Option<NoteDuration>,
+        dynamic: Option<Dynamic>,
+        articulation: Articulation,
+    ) -> Note {
+        Note {
+            class: PitchClass::C,
+            accidental: Accidental::None,
+            octave: 0,
+            duration,
+            dynamic,
+            articulation,
+            crescendo: None,
             tie: false,
         }
     }
@@ -312,80 +522,52 @@ mod tests {
         }
     }
 
+    fn quarter() -> NoteDuration {
+        NoteDuration {
+            ratio: 4,
+            augmentation: 0,
+            tuplet: None,
+        }
+    }
+
+    fn timing_at(position: Fraction, ts: TimeSignature) -> NoteTimingInfo {
+        NoteTimingInfo {
+            note: note(None, None, None),
+            time_signature: ts,
+            bar_number: 0,
+            position_in_bar: position,
+            note_stamp: position,
+            length: Fraction::new(1u32, 4u32),
+        }
+    }
+
+    // --- Pre-existing tests (use zero boosts to isolate crescendo logic) ----
+
     #[test]
     fn interpolates_volume_inside_crescendo_block() {
         let part = part(vec![
             Event::Note(note(
-                Some(NoteDuration {
-                    ratio: 4,
-                    augmentation: 0,
-                    tuplet: None,
-                }),
+                Some(quarter()),
                 Some(Dynamic::MF),
                 Some(Crescendo::CrescendoStart),
             )),
-            Event::Note(note(
-                Some(NoteDuration {
-                    ratio: 4,
-                    augmentation: 0,
-                    tuplet: None,
-                }),
-                None,
-                None,
-            )),
-            Event::Note(note(
-                Some(NoteDuration {
-                    ratio: 4,
-                    augmentation: 0,
-                    tuplet: None,
-                }),
-                None,
-                Some(Crescendo::End),
-            )),
+            Event::Note(note(Some(quarter()), None, None)),
+            Event::Note(note(Some(quarter()), None, Some(Crescendo::End))),
         ]);
         let timed_events = TimingHelper::get_timed_events(&part);
-        let mut helper = DynamicBuilder::build(&part);
+        let mut helper = DynamicBuilder::build_with_config(&part, no_boost());
 
+        let ts = TimeSignature::default();
         let first = match &timed_events[0].event {
-            Event::Note(note) => helper.next_note(
-                note,
-                &NoteTimingInfo {
-                    note: note.clone(),
-                    time_signature: lilyparse::syntax::ast::TimeSignature::default(),
-                    bar_number: 0,
-                    position_in_bar: Fraction::new(0u32, 1u32),
-                    note_stamp: timed_events[0].note_stamp,
-                    length: Fraction::new(1u32, 4u32),
-                },
-            ),
+            Event::Note(note) => helper.next_note(note, &timing_at(timed_events[0].note_stamp, ts)),
             _ => unreachable!(),
         };
         let second = match &timed_events[1].event {
-            Event::Note(note) => helper.next_note(
-                note,
-                &NoteTimingInfo {
-                    note: note.clone(),
-                    time_signature: lilyparse::syntax::ast::TimeSignature::default(),
-                    bar_number: 0,
-                    position_in_bar: Fraction::new(1u32, 4u32),
-                    note_stamp: timed_events[1].note_stamp,
-                    length: Fraction::new(1u32, 4u32),
-                },
-            ),
+            Event::Note(note) => helper.next_note(note, &timing_at(timed_events[1].note_stamp, ts)),
             _ => unreachable!(),
         };
         let third = match &timed_events[2].event {
-            Event::Note(note) => helper.next_note(
-                note,
-                &NoteTimingInfo {
-                    note: note.clone(),
-                    time_signature: lilyparse::syntax::ast::TimeSignature::default(),
-                    bar_number: 0,
-                    position_in_bar: Fraction::new(1u32, 2u32),
-                    note_stamp: timed_events[2].note_stamp,
-                    length: Fraction::new(1u32, 4u32),
-                },
-            ),
+            Event::Note(note) => helper.next_note(note, &timing_at(timed_events[2].note_stamp, ts)),
             _ => unreachable!(),
         };
 
@@ -397,69 +579,164 @@ mod tests {
     #[test]
     fn rest_dynamic_updates_following_note_volume() {
         let part = part(vec![
-            Event::Note(note(
-                Some(NoteDuration {
-                    ratio: 4,
-                    augmentation: 0,
-                    tuplet: None,
-                }),
-                Some(Dynamic::MF),
-                None,
-            )),
-            Event::Rest(rest(
-                Some(NoteDuration {
-                    ratio: 4,
-                    augmentation: 0,
-                    tuplet: None,
-                }),
-                Some(Dynamic::P),
-                None,
-            )),
-            Event::Note(note(
-                Some(NoteDuration {
-                    ratio: 4,
-                    augmentation: 0,
-                    tuplet: None,
-                }),
-                None,
-                None,
-            )),
+            Event::Note(note(Some(quarter()), Some(Dynamic::MF), None)),
+            Event::Rest(rest(Some(quarter()), Some(Dynamic::P), None)),
+            Event::Note(note(Some(quarter()), None, None)),
         ]);
         let timed_events = TimingHelper::get_timed_events(&part);
-        let mut helper = DynamicBuilder::build(&part);
+        let mut helper = DynamicBuilder::build_with_config(&part, no_boost());
 
+        let ts = TimeSignature::default();
         let first_note = match &timed_events[0].event {
             Event::Note(note) => note,
             _ => unreachable!(),
         };
-        let first_info = NoteTimingInfo {
-            note: first_note.clone(),
-            time_signature: lilyparse::syntax::ast::TimeSignature::default(),
-            bar_number: 0,
-            position_in_bar: Fraction::new(0u32, 1u32),
-            note_stamp: timed_events[0].note_stamp,
-            length: Fraction::new(1u32, 4u32),
-        };
-        assert_eq!(helper.next_note(first_note, &first_info).volume, 80);
+        assert_eq!(
+            helper
+                .next_note(first_note, &timing_at(timed_events[0].note_stamp, ts))
+                .volume,
+            80
+        );
 
-        let rest = match &timed_events[1].event {
+        let rest_ev = match &timed_events[1].event {
             Event::Rest(rest) => rest,
             _ => unreachable!(),
         };
-        helper.next_rest(rest);
+        helper.next_rest(rest_ev);
 
         let second_note = match &timed_events[2].event {
             Event::Note(note) => note,
             _ => unreachable!(),
         };
-        let second_info = NoteTimingInfo {
-            note: second_note.clone(),
-            time_signature: lilyparse::syntax::ast::TimeSignature::default(),
-            bar_number: 0,
-            position_in_bar: Fraction::new(1u32, 2u32),
-            note_stamp: timed_events[2].note_stamp,
-            length: Fraction::new(1u32, 4u32),
+        assert_eq!(
+            helper
+                .next_note(second_note, &timing_at(timed_events[2].note_stamp, ts))
+                .volume,
+            48
+        );
+    }
+
+    // --- Beat stress classification ------------------------------------------
+
+    #[test]
+    fn beat_stress_4_4() {
+        let ts = TimeSignature {
+            numerator: 4,
+            denominator: 4,
         };
-        assert_eq!(helper.next_note(second_note, &second_info).volume, 48);
+        assert_eq!(beat_stress(Fraction::new(0u32, 1u32), ts), BeatStress::Primary); // beat 1
+        assert_eq!(beat_stress(Fraction::new(1u32, 4u32), ts), BeatStress::Regular); // beat 2
+        assert_eq!(beat_stress(Fraction::new(2u32, 4u32), ts), BeatStress::Secondary); // beat 3
+        assert_eq!(beat_stress(Fraction::new(3u32, 4u32), ts), BeatStress::Regular); // beat 4
+    }
+
+    #[test]
+    fn beat_stress_3_4() {
+        let ts = TimeSignature {
+            numerator: 3,
+            denominator: 4,
+        };
+        assert_eq!(beat_stress(Fraction::new(0u32, 1u32), ts), BeatStress::Primary);
+        assert_eq!(beat_stress(Fraction::new(1u32, 4u32), ts), BeatStress::Regular);
+        assert_eq!(beat_stress(Fraction::new(2u32, 4u32), ts), BeatStress::Regular);
+    }
+
+    #[test]
+    fn beat_stress_6_8() {
+        let ts = TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        };
+        assert_eq!(beat_stress(Fraction::new(0u32, 1u32), ts), BeatStress::Primary); // beat 1
+        assert_eq!(beat_stress(Fraction::new(1u32, 8u32), ts), BeatStress::Regular); // beat 2
+        assert_eq!(beat_stress(Fraction::new(3u32, 8u32), ts), BeatStress::Secondary); // beat 4
+    }
+
+    // --- Accent boost --------------------------------------------------------
+
+    #[test]
+    fn accent_boost_applied() {
+        let part = part(vec![]);
+        let config = DynamicConfig {
+            accent_boost: 20,
+            primary_beat_boost: 0,
+            secondary_beat_boost: 0,
+        };
+        let mut helper = DynamicBuilder::build_with_config(&part, config);
+
+        let plain = note_with_articulation(Some(quarter()), Some(Dynamic::MF), Articulation::Portato);
+        let accented = note_with_articulation(Some(quarter()), Some(Dynamic::MF), Articulation::Accent);
+        let ts = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        // Use beat 1 (position 1/4) so no beat boost interferes
+        let timing = timing_at(Fraction::new(1u32, 4u32), ts);
+
+        let plain_vol = helper.next_note(&plain, &timing).volume;
+        // reset helper state
+        let mut helper2 = DynamicBuilder::build_with_config(&part, config);
+        let accented_vol = helper2.next_note(&accented, &timing).volume;
+
+        assert_eq!(accented_vol, plain_vol + 20);
+    }
+
+    #[test]
+    fn beat_stress_boost_applied() {
+        let part = part(vec![]);
+        let config = DynamicConfig {
+            accent_boost: 0,
+            primary_beat_boost: 12,
+            secondary_beat_boost: 6,
+        };
+        let mut helper = DynamicBuilder::build_with_config(&part, config);
+
+        let n = note_with_articulation(Some(quarter()), Some(Dynamic::MF), Articulation::Portato);
+        let ts = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+
+        let base = helper.next_note(&n, &timing_at(Fraction::new(1u32, 4u32), ts)).volume; // beat 2 (regular)
+        let primary = helper.next_note(&n, &timing_at(Fraction::new(0u32, 1u32), ts)).volume; // beat 1
+        let secondary = helper.next_note(&n, &timing_at(Fraction::new(2u32, 4u32), ts)).volume; // beat 3
+
+        assert_eq!(primary, base + 12);
+        assert_eq!(secondary, base + 6);
+    }
+
+    #[test]
+    fn boosts_clamped_to_max_volume() {
+        let part = part(vec![]);
+        let config = DynamicConfig {
+            accent_boost: 100,
+            primary_beat_boost: 100,
+            secondary_beat_boost: 0,
+        };
+        let mut helper = DynamicBuilder::build_with_config(&part, config);
+
+        let n = note_with_articulation(Some(quarter()), Some(Dynamic::FFF), Articulation::Accent);
+        let ts = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        // Primary beat + accent at FFF — total boost would exceed 127.
+        let vol = helper.next_note(&n, &timing_at(Fraction::new(0u32, 1u32), ts)).volume;
+        assert_eq!(vol, MidiVolume::MAX_VALUE);
+    }
+
+    #[test]
+    fn maps_midi_volume_into_string_range() {
+        let range = StringVolumeRange { min: 149, max: 220 };
+        assert_eq!(range.map_midi_volume(MidiVolume::new(0)), 149);
+        assert_eq!(range.map_midi_volume(MidiVolume::new(MidiVolume::MAX_VALUE)), 220);
+    }
+
+    #[test]
+    fn default_string_volume_table_spans_full_range() {
+        let table = StringVolumeTable::default();
+        let range = table.range_for_part(0);
+        assert_eq!(range.min, 0);
+        assert_eq!(range.max, 255);
     }
 }

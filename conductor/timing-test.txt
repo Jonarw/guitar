@@ -3,47 +3,21 @@ tempo 60
 0 reset
 
 0 pluck_volume E 20
-0 pluck_volume A 20
-0 pluck_volume D 20
-1 pluck_enable A
 1 pluck_enable E
-1 pluck_enable D
-2 pluck_volume A 70
-2 pluck_volume E 130
-2 pluck_volume D 120
-
-3 fret_quiet E 3
-3 fret_quiet A 2
-
-3.01 pluck E
-3.01 pluck A
-3.01 pluck D
-3.1 pluck_volume A 50
-3.1 pluck_volume E 110
-3.1 pluck_volume D 100
+2 pluck_volume E 30
+2.5 pluck E
+3 pluck_volume E 40
 3.5 pluck E
-3.5 pluck A
-3.5 pluck D
+4 pluck_volume E 50
+4.5 pluck E
+5 pluck_volume E 60
+5.5 pluck E
+6 pluck_volume E 70
+6.5 pluck E
+7 pluck_volume E 80
+7.5 pluck E
+8 pluck_volume E 90
+8.5 pluck E
 
-3.6 pluck_volume A 40
-3.6 pluck_volume E 100
-3.6 pluck_volume D 90
-4 pluck E
-4 pluck A
-4 pluck D
 
-5 unfret E 3
-5 unfret A 2
-5 dampen E 12
-5 dampen A 12
-5 dampen D 12
-5 dampen G 12
-5 dampen B 12
-5 dampen e 12
-6 unfret E 12
-6 unfret A 12
-6 unfret D 12
-6 unfret G 12
-6 unfret B 12
-6 unfret e 12
-6 reset
+9 reset
