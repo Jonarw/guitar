@@ -6,9 +6,9 @@ use std::{env, fs, process::ExitCode};
 use lilyparse::syntax::parse;
 use machine_score::MachineScore;
 
-use crate::{
-    machine_score::dynamic::{StringVolumeRange, StringVolumeTable},
-    playback::CommandTimeline,
+use crate::playback::{
+    CommandTimeline,
+    string_volume::{StringVolumeRange, StringVolumeTable},
 };
 
 fn run() -> Result<(), String> {
@@ -28,15 +28,18 @@ fn run() -> Result<(), String> {
 
     let machine_score = MachineScore::from_lilyscore(lily_score);
 
-    let volume_table = StringVolumeTable {
-        ranges: [
-            StringVolumeRange { min: 149, max: 205 }, // E
-            StringVolumeRange { min: 149, max: 220 }, // A
-            StringVolumeRange { min: 149, max: 220 }, // D
-            StringVolumeRange { min: 149, max: 220 }, // G
-            StringVolumeRange { min: 149, max: 220 }, // B
-            StringVolumeRange { min: 149, max: 220 }, // e
-        ],
+    let volume_table = {
+        let flat = |min, max| [StringVolumeRange { min, max }; 19];
+        StringVolumeTable {
+            ranges: [
+                flat(149, 205), // E
+                flat(149, 220), // A
+                flat(149, 220), // D
+                flat(149, 220), // G
+                flat(149, 220), // B
+                flat(149, 220), // e
+            ],
+        }
     };
 
     let time_line = CommandTimeline::from_machine_score_with_volume_table(&machine_score, &volume_table);

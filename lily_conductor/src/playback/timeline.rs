@@ -2,9 +2,9 @@ use fraction::Zero;
 use lilyparse::syntax::ast::Tempo;
 use protocol::{Fret, GuitarString, Message};
 
-use crate::machine_score::dynamic::{StringVolumeRange, StringVolumeTable};
 use crate::machine_score::timing::Notes;
 use crate::machine_score::{FingerTechnique, MachineScore, Note};
+use crate::playback::string_volume::StringVolumeTable;
 
 /// Guitar string configuration: (string enum, open-string MIDI pitch, max controllable frets).
 ///
@@ -204,13 +204,13 @@ impl CommandTimeline {
 
         for (part_idx, part) in score.parts.iter().enumerate() {
             let (guitar_string, open_pitch, max_frets) = STRING_CONFIGS[part_idx];
-            let volume_range = volume_table.range_for_part(part_idx);
             Self::build_string_commands(
                 &mut commands,
                 guitar_string,
                 open_pitch,
                 max_frets,
-                volume_range,
+                part_idx,
+                volume_table,
                 &part.notes,
                 tempo_changes,
                 &mut score_end_ms,
@@ -234,7 +234,8 @@ impl CommandTimeline {
         guitar_string: GuitarString,
         open_pitch: u8,
         max_frets: u8,
-        volume_range: StringVolumeRange,
+        part_index: usize,
+        volume_table: &StringVolumeTable,
         notes: &[Note],
         tempo_changes: &[(Notes, Tempo)],
         score_end_ms: &mut u64,
@@ -264,10 +265,10 @@ impl CommandTimeline {
             }
 
             // --- Volume (only when it changes) ----------------------------------
-            let pluck_vol = volume_range.map_midi_volume(note.volume);
+            let pluck_vol = volume_table.range_for(part_index, fret).map_midi_volume(note.volume);
             if last_pluck_volume != Some(pluck_vol) {
                 // Issue PluckVolume PLUCK_VOLUME_PREP_MS before the pluck so the hardware
-                // has time to apply it.  If the previous pluck was closer than that, place
+                // has time to apply it. If the previous pluck was closer than that, place
                 // it at the midpoint between the two plucks.
                 let volume_ms = match prev_pluck_ms {
                     Some(prev) => {
@@ -353,7 +354,7 @@ impl CommandTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::machine_score::timing::Fraction;
+    use crate::{machine_score::timing::Fraction, playback::string_volume::StringVolumeRange};
     use lilyparse::syntax::ast::{NoteDuration, Tempo};
 
     fn quarter_tempo(bpm: u16) -> Tempo {
@@ -611,13 +612,10 @@ mod tests {
 
     #[test]
     fn pluck_volume_uses_calibrated_string_range() {
-        use crate::machine_score::dynamic::{StringVolumeRange, StringVolumeTable};
         use crate::machine_score::timing::Fraction;
         use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
 
-        let volume_table = StringVolumeTable {
-            ranges: [StringVolumeRange { min: 149, max: 220 }; 6],
-        };
+        let volume_table = StringVolumeTable::uniform(StringVolumeRange { min: 149, max: 220 });
 
         let note1 = Note {
             pitch: MidiPitch::new(45),

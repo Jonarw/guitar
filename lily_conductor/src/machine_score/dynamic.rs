@@ -114,48 +114,6 @@ impl Default for DynamicConfig {
     }
 }
 
-/// Calibrated pluck-volume range for one string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StringVolumeRange {
-    pub min: u8,
-    pub max: u8,
-}
-
-impl StringVolumeRange {
-    /// Maps MIDI volume (`0..=127`) into this string's calibrated pluck-volume range.
-    pub fn map_midi_volume(&self, volume: MidiVolume) -> u8 {
-        assert!(self.min <= self.max, "StringVolumeRange min must be <= max");
-        let span = u16::from(self.max - self.min);
-        let mapped = u16::from(self.min)
-            + (u16::from(volume.volume) * span) / u16::from(MidiVolume::MAX_VALUE);
-        mapped as u8
-    }
-}
-
-/// Runtime table of calibrated pluck-volume ranges, one per guitar string/part.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StringVolumeTable {
-    pub ranges: [StringVolumeRange; 6],
-}
-
-impl StringVolumeTable {
-    /// Returns the calibrated range for a score part index (`0..=5`).
-    pub fn range_for_part(&self, part_index: usize) -> StringVolumeRange {
-        *self
-            .ranges
-            .get(part_index)
-            .expect("part index outside of 0..=5 for StringVolumeTable")
-    }
-}
-
-impl Default for StringVolumeTable {
-    fn default() -> Self {
-        // Defaults preserve current behaviour until manual calibration values are provided.
-        let full = StringVolumeRange { min: 0, max: 255 };
-        Self { ranges: [full; 6] }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Crescendo state
 // ---------------------------------------------------------------------------
@@ -723,20 +681,5 @@ mod tests {
         // Primary beat + accent at FFF — total boost would exceed 127.
         let vol = helper.next_note(&n, &timing_at(Fraction::new(0u32, 1u32), ts)).volume;
         assert_eq!(vol, MidiVolume::MAX_VALUE);
-    }
-
-    #[test]
-    fn maps_midi_volume_into_string_range() {
-        let range = StringVolumeRange { min: 149, max: 220 };
-        assert_eq!(range.map_midi_volume(MidiVolume::new(0)), 149);
-        assert_eq!(range.map_midi_volume(MidiVolume::new(MidiVolume::MAX_VALUE)), 220);
-    }
-
-    #[test]
-    fn default_string_volume_table_spans_full_range() {
-        let table = StringVolumeTable::default();
-        let range = table.range_for_part(0);
-        assert_eq!(range.min, 0);
-        assert_eq!(range.max, 255);
     }
 }
