@@ -122,6 +122,8 @@ pub struct Note {
     pub articulation: Articulation,
     pub crescendo: Option<Crescendo>,
     pub tie: bool,
+    pub fingering: Option<u32>,
+    pub slur: Option<Slur>,
 }
 
 /// Rest event.
@@ -132,6 +134,7 @@ pub struct Rest {
     pub articulation: Articulation,
     pub crescendo: Option<Crescendo>,
     pub multiplier: Option<RestMultiplier>,
+    pub slur: Option<Slur>,
 }
 
 /// Chromatic alteration.
@@ -142,6 +145,12 @@ pub enum Accidental {
     None,
     Sharp,
     DoubleSharp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Slur {
+    Start,
+    End,
 }
 
 /// Articulation marking.

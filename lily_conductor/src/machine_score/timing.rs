@@ -1,3 +1,5 @@
+use std::ops::Mul;
+
 use fraction::{GenericFraction, Zero};
 use lilyparse::syntax::ast::{self, Event, LilyPart, LilyScore, NoteDuration, Rest, Tempo, TimeSignature};
 
@@ -185,7 +187,12 @@ impl TimingHelper {
                         current_duration = nd;
                     }
 
-                    time += note_duration_to_notes(current_duration);
+                    let mut rest_notes = note_duration_to_notes(current_duration);
+                    if let Some(m) = rest.multiplier {
+                        rest_notes *= Notes::new(m.num, m.den);
+                    }
+
+                    time += rest_notes;
                 }
                 _ => {}
             }
@@ -267,6 +274,8 @@ mod tests {
             articulation: Articulation::none(),
             crescendo: None,
             tie: false,
+            fingering: None,
+            slur: None,
         }
     }
 
@@ -327,6 +336,7 @@ mod tests {
                 articulation: Articulation::none(),
                 crescendo: None,
                 multiplier: None,
+                slur: None,
             }),
         ]));
 

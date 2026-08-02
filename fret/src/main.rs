@@ -14,7 +14,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 pub mod hw;
 
-pub static MY_FRET: Fret = Fret::Fret7;
+pub static MY_FRET: Fret = Fret::Fret8;
 type FretSignal = Signal<ThreadModeRawMutex, Message>;
 
 static FRET_SIGNALS: [FretSignal; 6] = [

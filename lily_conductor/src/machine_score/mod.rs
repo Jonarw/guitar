@@ -264,6 +264,8 @@ mod tests {
             articulation,
             crescendo,
             tie: false,
+            fingering: None,
+            slur: None,
         }
     }
 
@@ -274,6 +276,7 @@ mod tests {
             articulation: Articulation::none(),
             crescendo: None,
             multiplier: None,
+            slur: None,
         }
     }
 

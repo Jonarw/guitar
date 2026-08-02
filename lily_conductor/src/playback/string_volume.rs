@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use protocol::Fret;
 
 use crate::machine_score::MidiVolume;
@@ -30,7 +32,7 @@ impl StringVolumeRange {
 /// perceived volume remains consistent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StringVolumeTable {
-    pub ranges: [[StringVolumeRange; 19]; 6],
+    pub ranges: [[StringVolumeRange; 13]; 6],
 }
 
 impl StringVolumeTable {
@@ -44,7 +46,7 @@ impl StringVolumeTable {
     /// Constructs a table where every (string, fret) cell has the same range.
     pub fn uniform(range: StringVolumeRange) -> Self {
         Self {
-            ranges: [[range; 19]; 6],
+            ranges: [[range; 13]; 6],
         }
     }
 }
@@ -53,6 +55,120 @@ impl Default for StringVolumeTable {
     fn default() -> Self {
         // Defaults preserve current behaviour until calibration values are provided.
         Self::uniform(StringVolumeRange { min: 0, max: 255 })
+    }
+}
+
+impl StringVolumeTable {
+    /// Loads a `StringVolumeTable` from a CSV file produced by `pluck_calibration`.
+    ///
+    /// Expected format (header required):
+    /// ```text
+    /// string,fret,min_volume
+    /// E,NoFret,149
+    /// E,Fret1,152
+    /// E,Fret2,not_detected
+    /// ```
+    ///
+    /// The `min` of each cell is taken from the CSV.  The `max` is computed as
+    /// `min + volume_span`, clamped to 255.  Cells with `not_detected` (or any
+    /// missing row) keep the provided `fallback` range.
+    pub fn from_csv(path: impl AsRef<Path>) -> Result<Self, String> {
+        let content =
+            std::fs::read_to_string(path.as_ref()).map_err(|e| format!("Cannot read calibration file: {e}"))?;
+
+        let mut table = Self::uniform(StringVolumeRange { min: 0, max: 0 });
+
+        for (line_no, line) in content.lines().enumerate() {
+            // Skip header and blank lines.
+            if line_no == 0 || line.trim().is_empty() {
+                continue;
+            }
+
+            let cols: Vec<&str> = line.splitn(3, ',').collect();
+            if cols.len() != 3 {
+                return Err(format!(
+                    "Calibration CSV line {}: expected 3 columns, got {}",
+                    line_no + 1,
+                    cols.len()
+                ));
+            }
+
+            let part_index = parse_string_name(cols[0])
+                .ok_or_else(|| format!("Calibration CSV line {}: unknown string '{}'", line_no + 1, cols[0]))?;
+            let fret = parse_fret(cols[1])
+                .ok_or_else(|| format!("Calibration CSV line {}: unknown fret '{}'", line_no + 1, cols[1]))?;
+
+            let min_vol = cols[2].trim();
+            if min_vol == "not_detected" {
+                return Err(format!("Calibration CSV line {}: not detected", line_no + 1,));
+            }
+
+            let min: u8 = min_vol
+                .parse()
+                .map_err(|_| format!("Calibration CSV line {}: invalid min_volume '{}'", line_no + 1, min_vol))?;
+
+            table.ranges[part_index][fret as usize] = StringVolumeRange { min, max: 0 };
+        }
+
+        for range in &mut table.ranges {
+            if range.iter().find(|r| r.min == 0).is_some() {
+                return Err("Found empty range".to_owned());
+            }
+
+            let min = range
+                .iter()
+                .map(|r| r.min)
+                .min()
+                .ok_or_else(|| "Range should contain items")?;
+            let max = range
+                .iter()
+                .map(|r| r.min)
+                .max()
+                .ok_or_else(|| "Range should contain items")?;
+            let span = (max - min) * 2;
+            for item in range {
+                item.max = item.min + span;
+            }
+        }
+
+        Ok(table)
+    }
+}
+
+fn parse_string_name(s: &str) -> Option<usize> {
+    match s.trim() {
+        "E" => Some(0),
+        "A" => Some(1),
+        "D" => Some(2),
+        "G" => Some(3),
+        "B" => Some(4),
+        "e" => Some(5),
+        _ => None,
+    }
+}
+
+fn parse_fret(s: &str) -> Option<Fret> {
+    match s.trim() {
+        "NoFret" => Some(Fret::NoFret),
+        "Fret1" => Some(Fret::Fret1),
+        "Fret2" => Some(Fret::Fret2),
+        "Fret3" => Some(Fret::Fret3),
+        "Fret4" => Some(Fret::Fret4),
+        "Fret5" => Some(Fret::Fret5),
+        "Fret6" => Some(Fret::Fret6),
+        "Fret7" => Some(Fret::Fret7),
+        "Fret8" => Some(Fret::Fret8),
+        "Fret9" => Some(Fret::Fret9),
+        "Fret10" => Some(Fret::Fret10),
+        "Fret11" => Some(Fret::Fret11),
+        "Fret12" => Some(Fret::Fret12),
+        "Fret13" => Some(Fret::Fret13),
+        "Fret14" => Some(Fret::Fret14),
+        "Fret15" => Some(Fret::Fret15),
+        "Fret16" => Some(Fret::Fret16),
+        "Fret17" => Some(Fret::Fret17),
+        "Fret18" => Some(Fret::Fret18),
+        _ => None,
     }
 }
 

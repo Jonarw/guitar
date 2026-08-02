@@ -51,6 +51,18 @@ fn articulation(input: &mut &str) -> Result<Articulation> {
     .parse_next(input)
 }
 
+fn fingering(input: &mut &str) -> Result<u32> {
+    preceded('-', digit1.parse_to())
+        .context(Label("Fingering"))
+        .parse_next(input)
+}
+
+fn slur(input: &mut &str) -> Result<Slur> {
+    preceded('\\', alt(('('.value(Slur::Start), ')'.value(Slur::End))))
+        .context(Label("Slur"))
+        .parse_next(input)
+}
+
 fn tie(input: &mut &str) -> Result<()> {
     '~'.void().parse_next(input)
 }
@@ -126,12 +138,13 @@ fn rest(input: &mut &str) -> Result<Rest> {
     preceded(alt(('r', 'R')), (opt(rest_duration), modifiers))
         .context(Label("Rest"))
         .parse_next(input)
-        .map(|(rest_duration, (dynamic, articulation, crescendo, _))| Rest {
+        .map(|(rest_duration, (dynamic, articulation, crescendo, _, _, slur))| Rest {
             duration: rest_duration.map(|rd| rd.0),
             dynamic,
             articulation,
             crescendo,
             multiplier: rest_duration.map(|rd| rd.1).flatten(),
+            slur,
         })
 }
 
@@ -140,6 +153,8 @@ enum Modifier {
     Articulation(Articulation),
     Crescendo(Crescendo),
     Tie,
+    Fingering(u32),
+    Slur(Slur),
 }
 
 fn modifier(input: &mut &str) -> Result<Modifier> {
@@ -148,17 +163,30 @@ fn modifier(input: &mut &str) -> Result<Modifier> {
         articulation.map(Modifier::Articulation),
         crescendo.map(Modifier::Crescendo),
         tie.map(|()| Modifier::Tie),
+        fingering.map(Modifier::Fingering),
+        slur.map(Modifier::Slur),
     ))
     .parse_next(input)
 }
 
-fn modifiers(input: &mut &str) -> Result<(Option<Dynamic>, Articulation, Option<Crescendo>, bool)> {
+fn modifiers(
+    input: &mut &str,
+) -> Result<(
+    Option<Dynamic>,
+    Articulation,
+    Option<Crescendo>,
+    bool,
+    Option<u32>,
+    Option<Slur>,
+)> {
     let mods: Vec<Modifier> = repeat(0.., modifier).parse_next(input)?;
 
     let mut dynamic = None;
     let mut articulation = Articulation::none();
     let mut crescendo = None;
     let mut tie = false;
+    let mut fingering = None;
+    let mut slur = None;
 
     for m in mods {
         match m {
@@ -166,10 +194,12 @@ fn modifiers(input: &mut &str) -> Result<(Option<Dynamic>, Articulation, Option<
             Modifier::Articulation(a) => articulation |= a,
             Modifier::Crescendo(a) => crescendo = Some(a),
             Modifier::Tie => tie = true,
+            Modifier::Fingering(f) => fingering = Some(f),
+            Modifier::Slur(s) => slur = Some(s),
         }
     }
 
-    Ok((dynamic, articulation, crescendo, tie))
+    Ok((dynamic, articulation, crescendo, tie, fingering, slur))
 }
 
 fn note(input: &mut &str) -> Result<Note> {
@@ -177,7 +207,7 @@ fn note(input: &mut &str) -> Result<Note> {
         .context(Label("Note"))
         .parse_next(input)
         .map(
-            |(class, accidental, octave, duration, (dynamic, articulation, crescendo, tie))| Note {
+            |(class, accidental, octave, duration, (dynamic, articulation, crescendo, tie, fingering, slur))| Note {
                 class,
                 accidental,
                 octave,
@@ -186,6 +216,8 @@ fn note(input: &mut &str) -> Result<Note> {
                 articulation,
                 crescendo,
                 tie,
+                fingering,
+                slur,
             },
         )
 }

@@ -1,0 +1,15 @@
+[package]
+name = "pluck_calibration"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pluck_calibration"
+path = "src/main.rs"
+
+[dependencies]
+protocol = { path = "../protocol" }
+serialport = { version = "4", default-features = false }
+postcard = { version = "1", features = ["use-std"] }
+alsa = "0.9"
+anyhow = "1"

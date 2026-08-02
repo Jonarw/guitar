@@ -1,0 +1,17 @@
+Ok any now we want to actually determine the correct range for each string. For that I want you to make a small helper program, make a new rust program for that at the root of the repo in a folder called 'pick_calibration'. This should be a small executable which does the following:
+- take a /dev/ttyx from command line
+- take the name of an audio device from command line
+- at the start, issue a Reset command
+- then go through each string and each fret. Start with the E string and go through all frets, determining the minimum pick volume until some sound is produced
+- First set the volume to 0 and enable the pick for the string
+- Then alternate between picking once and increasing the volume, checking if the guitar makes a sound
+- to determine if a sound is produced, use the provided audio device. This is an audio interface that is connected to the amp jack on the guitar, and can therefore record the produced sound. Use this audio device to record the waveform on channel 1
+- I think to determine if the guitar is playing, a simple threshold check with a short moving average should be sufficient. I.e. if the moving average output exceeds the threshold at least once in a certain time window after the pluck, we assume that the pluck was 'succesful'
+- To find the lowest volume where the guitar plays, first go in larger steps (e.g. 10), once you identify a sound from the guitar, go back one step and go in steps of 1
+- All parameters should be definable via consts. Defaults:
+
+initial step: 10
+fine step: 1
+moving average duration: 10ms
+detection threshold: 0.01 (audio sample)
+time per step: 500ms

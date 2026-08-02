@@ -10,21 +10,12 @@ use crate::playback::string_volume::StringVolumeTable;
 ///
 /// Standard tuning. The high-e string has 18 controlled frets; all others have 12.
 const STRING_CONFIGS: [(GuitarString, u8, u8); 6] = [
-    (GuitarString::E, 40, 12),
-    (GuitarString::A, 45, 12),
-    (GuitarString::D, 50, 12),
-    (GuitarString::G, 55, 12),
-    (GuitarString::B, 59, 12),
     (GuitarString::e, 64, 18),
-];
-
-const ALL_STRINGS: [GuitarString; 6] = [
-    GuitarString::E,
-    GuitarString::A,
-    GuitarString::D,
-    GuitarString::G,
-    GuitarString::B,
-    GuitarString::e,
+    (GuitarString::B, 59, 12),
+    (GuitarString::G, 55, 12),
+    (GuitarString::D, 50, 12),
+    (GuitarString::A, 45, 12),
+    (GuitarString::E, 40, 12),
 ];
 
 // ---------------------------------------------------------------------------
@@ -191,7 +182,7 @@ impl CommandTimeline {
             time_ms: 0,
             message: Message::Reset,
         });
-        for string in ALL_STRINGS {
+        for (string, _, _) in STRING_CONFIGS {
             commands.push(TimedCommand {
                 time_ms: 0,
                 message: Message::PluckEnable(string),
@@ -458,6 +449,8 @@ mod tests {
             articulation,
             crescendo: None,
             tie: false,
+            fingering: None,
+            slur: None,
         })
     }
 
@@ -733,8 +726,6 @@ mod tests {
                     events: vec![
                         lily_note(PitchClass::B, -1, 4, Articulation::Staccato), // Fret7
                         Event::Rest(Rest {
-                            // 1/8 rest (~333 ms at 90 BPM) — short enough that
-                            // DAMPEN_SETTLE_MS would overshoot the next fret command.
                             duration: Some(NoteDuration {
                                 ratio: 8,
                                 augmentation: 0,
@@ -744,6 +735,7 @@ mod tests {
                             articulation: Articulation::none(),
                             crescendo: None,
                             multiplier: None,
+                            slur: None,
                         }),
                         lily_note(PitchClass::A, -1, 4, Articulation::Staccato), // Fret5
                     ],

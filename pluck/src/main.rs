@@ -34,7 +34,7 @@ impl ChannelSignals {
 }
 
 static SIGNALS: [ChannelSignals; 3] = [ChannelSignals::new(), ChannelSignals::new(), ChannelSignals::new()];
-static VARIANT: Variant = Variant::Left;
+static VARIANT: Variant = Variant::Right;
 
 #[derive(Clone, Copy)]
 pub enum Variant {
@@ -76,9 +76,9 @@ fn get_signals(string: GuitarString) -> &'static ChannelSignals {
         GuitarString::E => &SIGNALS[0],
         GuitarString::A => &SIGNALS[1],
         GuitarString::D => &SIGNALS[2],
-        GuitarString::G => &SIGNALS[0],
+        GuitarString::G => &SIGNALS[2],
         GuitarString::B => &SIGNALS[1],
-        GuitarString::e => &SIGNALS[2],
+        GuitarString::e => &SIGNALS[0],
     }
 }
 

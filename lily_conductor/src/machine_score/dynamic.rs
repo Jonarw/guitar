@@ -443,6 +443,8 @@ mod tests {
             articulation: Articulation::Portato,
             crescendo,
             tie: false,
+            fingering: None,
+            slur: None,
         }
     }
 
@@ -460,6 +462,8 @@ mod tests {
             articulation,
             crescendo: None,
             tie: false,
+            fingering: None,
+            slur: None,
         }
     }
 
@@ -470,6 +474,7 @@ mod tests {
             articulation: Articulation::none(),
             crescendo,
             multiplier: None,
+            slur: None,
         }
     }
 

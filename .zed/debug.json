@@ -6,7 +6,25 @@
     "build": "Build lily_conductor",
     "program": "$ZED_WORKTREE_ROOT/lily_conductor/target/debug/lily_conductor",
     "args": [
-      "${ZED_SELECTED_TEXT:/home/jon/Documents/sotw.ly}"
+      "/home/jon/Documents/sotw.ly",
+      "--calibration",
+      "calibration.csv"
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "sourceLanguages": [
+      "rust"
+    ]
+  },
+  {
+    "label": "Debug pluck_calibration",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "build": "Build pluck_calibration",
+    "program": "$ZED_WORKTREE_ROOT/pluck_calibration/target/debug/pluck_calibration",
+    "args": [
+      "/dev/ttyUSB0",
+      "sysdefault:CARD=USB",
+      "calibration.csv"
     ],
     "cwd": "$ZED_WORKTREE_ROOT",
     "sourceLanguages": [
