@@ -100,9 +100,13 @@ fn parse_command(line: &str) -> Result<Message, String> {
             let (string, fret) = parse_string_and_fret(rest)?;
             Ok(Message::Dampen(string, fret))
         }
-        'R' | 'r' => {
+        'r' => {
             let (string, fret) = parse_string_and_fret(rest)?;
             Ok(Message::Unfret(string, fret))
+        }
+        'R' => {
+            let (string, fret) = parse_string_and_fret(rest)?;
+            Ok(Message::UnfretFast(string, fret))
         }
         'V' | 'v' => {
             let (string, volume) = parse_string_and_volume(rest)?;

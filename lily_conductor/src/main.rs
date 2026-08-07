@@ -6,18 +6,12 @@ use std::{env, fs, process::ExitCode};
 use lilyparse::syntax::parse;
 use machine_score::MachineScore;
 
-use crate::playback::{
-    CommandTimeline,
-    string_volume::{StringVolumeRange, StringVolumeTable},
-};
+use crate::playback::{CommandTimeline, string_volume::StringVolumeTable};
 
-/// Volume span applied on top of each calibrated minimum to derive the maximum.
-/// Tune this after running pluck_calibration to taste.
-const CALIBRATION_VOLUME_SPAN: u8 = 70;
-
-/// Fallback range used for any (string, fret) not present in the calibration CSV,
-/// and for the entire table when no CSV is provided.
-const FALLBACK_RANGE: StringVolumeRange = StringVolumeRange { min: 60, max: 100 };
+/// Default serial port for the guitar RS485 interface.
+const DEFAULT_SERIAL_PORT: &str = "/dev/ttyUSB0";
+/// Serial baud rate.
+const BAUD_RATE: u32 = 115_200;
 
 fn build_volume_table(calibration_path: Option<&str>) -> Result<StringVolumeTable, String> {
     match calibration_path {
@@ -48,15 +42,16 @@ fn run() -> Result<(), String> {
     let machine_score = MachineScore::from_lilyscore(lily_score);
     let volume_table = build_volume_table(calibration_path)?;
 
-    let _time_line = CommandTimeline::from_machine_score_with_volume_table(&machine_score, &volume_table);
+    let timeline = CommandTimeline::from_machine_score_with_volume_table(&machine_score, &volume_table);
 
-    println!(
-        "Processed '{}' into MachineScore (title='{}', parts={}).",
-        file_path,
-        machine_score.title,
-        machine_score.parts.len()
-    );
+    let mut port = serialport::new(DEFAULT_SERIAL_PORT, BAUD_RATE)
+        .timeout(std::time::Duration::from_millis(100))
+        .open()
+        .map_err(|e| format!("Failed to open serial port '{DEFAULT_SERIAL_PORT}': {e}"))?;
 
+    playback::player::play(&timeline, &mut *port).map_err(|e| format!("Playback error: {e}"))?;
+
+    println!("Done.");
     Ok(())
 }
 

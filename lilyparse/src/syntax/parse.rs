@@ -51,9 +51,16 @@ fn articulation(input: &mut &str) -> Result<Articulation> {
     .parse_next(input)
 }
 
-fn fingering(input: &mut &str) -> Result<u32> {
+fn fingering(input: &mut &str) -> Result<u16> {
     preceded('-', digit1.parse_to())
         .context(Label("Fingering"))
+        .parse_next(input)
+}
+
+fn tremolo(input: &mut &str) -> Result<Tremolo> {
+    preceded(':', opt(digit1.parse_to()))
+        .map(|d| Tremolo { repetition_duration: d })
+        .context(Label("Tremolo"))
         .parse_next(input)
 }
 
@@ -121,30 +128,66 @@ fn crescendo(input: &mut &str) -> Result<Crescendo> {
     .parse_next(input)
 }
 
-fn rest_multiplier(input: &mut &str) -> Result<RestMultiplier> {
-    (preceded('*', digit1.parse_to()), opt(preceded('/', digit1.parse_to())))
-        .map(|(num, den)| {
-            let den = den.unwrap_or(1);
-            RestMultiplier { num, den }
-        })
-        .parse_next(input)
+fn rest_multiplier(input: &mut &str) -> Result<u32> {
+    preceded('*', digit1.parse_to()).parse_next(input)
 }
 
-fn rest_duration(input: &mut &str) -> Result<(NoteDuration, Option<RestMultiplier>)> {
-    (duration, opt(rest_multiplier)).parse_next(input)
+fn rest_divider(input: &mut &str) -> Result<u32> {
+    preceded('/', digit1.parse_to()).parse_next(input)
+}
+
+enum RestDurationModifier {
+    Multiplier(u32),
+    Divider(u32),
+}
+
+fn rest_duration_modifier(input: &mut &str) -> Result<RestDurationModifier> {
+    alt((
+        rest_multiplier.map(RestDurationModifier::Multiplier),
+        rest_divider.map(RestDurationModifier::Divider),
+    ))
+    .parse_next(input)
+}
+
+fn rest_duration_modifiers(input: &mut &str) -> Result<(Vec<u32>, Vec<u32>)> {
+    let mods: Vec<RestDurationModifier> = repeat(0.., rest_duration_modifier).parse_next(input)?;
+
+    let mut multipliers = Vec::new();
+    let mut dividers = Vec::new();
+
+    for modifier in mods {
+        match modifier {
+            RestDurationModifier::Multiplier(m) => multipliers.push(m),
+            RestDurationModifier::Divider(d) => dividers.push(d),
+        }
+    }
+
+    Ok((multipliers, dividers))
+}
+
+fn rest_duration(input: &mut &str) -> Result<(NoteDuration, (Vec<u32>, Vec<u32>))> {
+    (duration, rest_duration_modifiers).parse_next(input)
 }
 
 fn rest(input: &mut &str) -> Result<Rest> {
     preceded(alt(('r', 'R')), (opt(rest_duration), modifiers))
         .context(Label("Rest"))
         .parse_next(input)
-        .map(|(rest_duration, (dynamic, articulation, crescendo, _, _, slur))| Rest {
-            duration: rest_duration.map(|rd| rd.0),
-            dynamic,
-            articulation,
-            crescendo,
-            multiplier: rest_duration.map(|rd| rd.1).flatten(),
-            slur,
+        .map(|(rest_duration, (dynamic, articulation, crescendo, _, _, slur, _))| {
+            let (duration, multipliers, dividers) = match rest_duration {
+                Some((dur, (mul, div))) => (Some(dur), mul, div),
+                None => (None, Vec::new(), Vec::new()),
+            };
+
+            Rest {
+                duration,
+                dynamic,
+                articulation,
+                crescendo,
+                multipliers,
+                dividers,
+                slur,
+            }
         })
 }
 
@@ -153,8 +196,9 @@ enum Modifier {
     Articulation(Articulation),
     Crescendo(Crescendo),
     Tie,
-    Fingering(u32),
+    Fingering(u16),
     Slur(Slur),
+    Tremolo(Tremolo),
 }
 
 fn modifier(input: &mut &str) -> Result<Modifier> {
@@ -165,6 +209,7 @@ fn modifier(input: &mut &str) -> Result<Modifier> {
         tie.map(|()| Modifier::Tie),
         fingering.map(Modifier::Fingering),
         slur.map(Modifier::Slur),
+        tremolo.map(Modifier::Tremolo),
     ))
     .parse_next(input)
 }
@@ -176,8 +221,9 @@ fn modifiers(
     Articulation,
     Option<Crescendo>,
     bool,
-    Option<u32>,
+    Option<u16>,
     Option<Slur>,
+    Option<Tremolo>,
 )> {
     let mods: Vec<Modifier> = repeat(0.., modifier).parse_next(input)?;
 
@@ -187,6 +233,7 @@ fn modifiers(
     let mut tie = false;
     let mut fingering = None;
     let mut slur = None;
+    let mut tremolo = None;
 
     for m in mods {
         match m {
@@ -196,10 +243,11 @@ fn modifiers(
             Modifier::Tie => tie = true,
             Modifier::Fingering(f) => fingering = Some(f),
             Modifier::Slur(s) => slur = Some(s),
+            Modifier::Tremolo(t) => tremolo = Some(t),
         }
     }
 
-    Ok((dynamic, articulation, crescendo, tie, fingering, slur))
+    Ok((dynamic, articulation, crescendo, tie, fingering, slur, tremolo))
 }
 
 fn note(input: &mut &str) -> Result<Note> {
@@ -207,7 +255,13 @@ fn note(input: &mut &str) -> Result<Note> {
         .context(Label("Note"))
         .parse_next(input)
         .map(
-            |(class, accidental, octave, duration, (dynamic, articulation, crescendo, tie, fingering, slur))| Note {
+            |(
+                class,
+                accidental,
+                octave,
+                duration,
+                (dynamic, articulation, crescendo, tie, fingering, slur, tremolo),
+            )| Note {
                 class,
                 accidental,
                 octave,
@@ -218,6 +272,7 @@ fn note(input: &mut &str) -> Result<Note> {
                 tie,
                 fingering,
                 slur,
+                tremolo,
             },
         )
 }

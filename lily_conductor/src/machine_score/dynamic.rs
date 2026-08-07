@@ -423,7 +423,7 @@ impl DynamicHelper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lilyparse::syntax::ast::{Accidental, Articulation, Note, NoteDuration, PitchClass, TimeSignature};
+    use lilyparse::syntax::ast::{Articulation, Note, NoteDuration, TimeSignature};
 
     fn no_boost() -> DynamicConfig {
         DynamicConfig {
@@ -434,18 +434,11 @@ mod tests {
     }
 
     fn note(duration: Option<NoteDuration>, dynamic: Option<Dynamic>, crescendo: Option<Crescendo>) -> Note {
-        Note {
-            class: PitchClass::C,
-            accidental: Accidental::None,
-            octave: 0,
-            duration,
-            dynamic,
-            articulation: Articulation::Portato,
-            crescendo,
-            tie: false,
-            fingering: None,
-            slur: None,
-        }
+        let mut ret = Note::default();
+        ret.duration = duration;
+        ret.dynamic = dynamic;
+        ret.crescendo = crescendo;
+        ret
     }
 
     fn note_with_articulation(
@@ -453,29 +446,19 @@ mod tests {
         dynamic: Option<Dynamic>,
         articulation: Articulation,
     ) -> Note {
-        Note {
-            class: PitchClass::C,
-            accidental: Accidental::None,
-            octave: 0,
-            duration,
-            dynamic,
-            articulation,
-            crescendo: None,
-            tie: false,
-            fingering: None,
-            slur: None,
-        }
+        let mut ret = Note::default();
+        ret.duration = duration;
+        ret.dynamic = dynamic;
+        ret.articulation = articulation;
+        ret
     }
 
     fn rest(duration: Option<NoteDuration>, dynamic: Option<Dynamic>, crescendo: Option<Crescendo>) -> Rest {
-        Rest {
-            duration,
-            dynamic,
-            articulation: Articulation::none(),
-            crescendo,
-            multiplier: None,
-            slur: None,
-        }
+        let mut ret = Rest::default();
+        ret.duration = duration;
+        ret.dynamic = dynamic;
+        ret.crescendo = crescendo;
+        ret
     }
 
     fn part(events: Vec<Event>) -> LilyPart {

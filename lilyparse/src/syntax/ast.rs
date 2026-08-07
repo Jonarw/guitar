@@ -1,3 +1,5 @@
+use std::default;
+
 use bitmask_enum::bitmask;
 pub const NUMBER_OF_STRINGS: usize = 6;
 
@@ -112,7 +114,7 @@ impl Default for NoteDuration {
 }
 
 /// Pitched event.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Note {
     pub class: PitchClass,
     pub accidental: Accidental,
@@ -122,26 +124,29 @@ pub struct Note {
     pub articulation: Articulation,
     pub crescendo: Option<Crescendo>,
     pub tie: bool,
-    pub fingering: Option<u32>,
+    pub fingering: Option<u16>,
     pub slur: Option<Slur>,
+    pub tremolo: Option<Tremolo>,
 }
 
 /// Rest event.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct Rest {
     pub duration: Option<NoteDuration>,
     pub dynamic: Option<Dynamic>,
     pub articulation: Articulation,
     pub crescendo: Option<Crescendo>,
-    pub multiplier: Option<RestMultiplier>,
+    pub multipliers: Vec<u32>,
+    pub dividers: Vec<u32>,
     pub slur: Option<Slur>,
 }
 
 /// Chromatic alteration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Accidental {
     DoubleFlat,
     Flat,
+    #[default]
     None,
     Sharp,
     DoubleSharp,
@@ -155,6 +160,7 @@ pub enum Slur {
 
 /// Articulation marking.
 #[bitmask]
+#[derive(Default)]
 pub enum Articulation {
     Tenuto,
     Portato,
@@ -187,8 +193,9 @@ pub enum Dynamic {
 }
 
 /// Diatonic pitch class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PitchClass {
+    #[default]
     C,
     D,
     E,
@@ -196,4 +203,9 @@ pub enum PitchClass {
     G,
     A,
     B,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tremolo {
+    pub repetition_duration: Option<u16>,
 }

@@ -1,5 +1,3 @@
-use std::ops::Mul;
-
 use fraction::{GenericFraction, Zero};
 use lilyparse::syntax::ast::{self, Event, LilyPart, LilyScore, NoteDuration, Rest, Tempo, TimeSignature};
 
@@ -25,6 +23,17 @@ fn note_duration_to_notes(note_duration: NoteDuration) -> Fraction {
     }
 
     fraction
+}
+
+/// Converts a parsed LilyPond duration to a fractional note length.
+fn rest_duration_to_notes(rest: &Rest) -> Option<Fraction> {
+    rest.duration.map(|d| {
+        let base_duration = note_duration_to_notes(d);
+        let mul = rest.multipliers.iter().product::<u32>();
+        let div = rest.dividers.iter().product::<u32>();
+        let modifier = Fraction::new(mul, div);
+        base_duration * modifier
+    })
 }
 
 /// Computes a full bar length from a time signature.
@@ -86,21 +95,12 @@ impl TimingHelper {
     }
 
     /// Advances timeline state using LilyPond carry-forward duration semantics.
-    fn advance_by(&mut self, amount: Notes) {
-        self.note_stamp += amount;
-        self.number_of_bars += amount / self.bar_length;
-        self.position_in_bar = (self.position_in_bar + amount) % self.bar_length;
+    fn advance(&mut self) {
+        self.note_stamp += self.note_length;
+        self.number_of_bars += self.note_length / self.bar_length;
+        self.position_in_bar = (self.position_in_bar + self.note_length) % self.bar_length;
 
         self.apply_pending_time_signature_changes();
-    }
-
-    /// Advances timeline state using LilyPond carry-forward duration semantics.
-    fn advance(&mut self, note_duration: Option<NoteDuration>) {
-        if let Some(note_duration) = note_duration {
-            self.note_length = note_duration_to_notes(note_duration);
-        }
-
-        self.advance_by(self.note_length);
     }
 
     /// Resets helper state so it can be reused for another part traversal.
@@ -117,18 +117,11 @@ impl TimingHelper {
 
     /// Advances state by one rest.
     pub fn next_rest(&mut self, rest: &Rest) {
-        if let Some(multiplier) = rest.multiplier {
-            let rest_duration = rest
-                .duration
-                .expect("Rest duration needs to be present when there is a multiplier");
-
-            self.note_length = note_duration_to_notes(rest_duration);
-
-            let multiplier = Fraction::new(multiplier.num, multiplier.den);
-            self.advance_by(self.note_length * multiplier);
-        } else {
-            self.advance(rest.duration);
+        if let Some(rest_duration) = rest_duration_to_notes(rest) {
+            self.note_length = rest_duration;
         }
+
+        self.advance();
     }
 
     /// Returns timing information for `note` and advances internal state.
@@ -147,7 +140,11 @@ impl TimingHelper {
             length: Notes::default(),
         };
 
-        self.advance(note.duration);
+        if let Some(note_duration) = note.duration {
+            self.note_length = note_duration_to_notes(note_duration);
+        }
+
+        self.advance();
         ret.length = self.note_length;
         ret
     }
@@ -165,7 +162,7 @@ impl TimingHelper {
     /// Tags each event in a part with the note position at which it occurs.
     pub fn get_timed_events(part: &LilyPart) -> Vec<TimedEvent> {
         let mut time = Notes::default();
-        let mut current_duration = NoteDuration::default();
+        let mut current_duration = Notes::zero();
         let mut ret = Vec::new();
 
         for event in &part.events {
@@ -177,22 +174,17 @@ impl TimingHelper {
             match event {
                 Event::Note(note) => {
                     if let Some(nd) = note.duration {
-                        current_duration = nd;
+                        current_duration = note_duration_to_notes(nd);
                     }
 
-                    time += note_duration_to_notes(current_duration);
+                    time += current_duration;
                 }
                 Event::Rest(rest) => {
-                    if let Some(nd) = rest.duration {
+                    if let Some(nd) = rest_duration_to_notes(rest) {
                         current_duration = nd;
                     }
 
-                    let mut rest_notes = note_duration_to_notes(current_duration);
-                    if let Some(m) = rest.multiplier {
-                        rest_notes *= Notes::new(m.num, m.den);
-                    }
-
-                    time += rest_notes;
+                    time += current_duration;
                 }
                 _ => {}
             }
@@ -262,21 +254,12 @@ impl TimingHelper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lilyparse::syntax::ast::{Accidental, Articulation, Dynamic, Note, PitchClass, Tuplet};
+    use lilyparse::syntax::ast::{Articulation, Note, Tuplet};
 
     fn note(duration: Option<NoteDuration>) -> Note {
-        Note {
-            class: PitchClass::C,
-            accidental: Accidental::None,
-            octave: 0,
-            duration,
-            dynamic: Some(Dynamic::MF),
-            articulation: Articulation::none(),
-            crescendo: None,
-            tie: false,
-            fingering: None,
-            slur: None,
-        }
+        let mut ret = Note::default();
+        ret.duration = duration;
+        ret
     }
 
     fn part(events: Vec<Event>) -> LilyPart {
@@ -335,8 +318,9 @@ mod tests {
                 dynamic: None,
                 articulation: Articulation::none(),
                 crescendo: None,
-                multiplier: None,
                 slur: None,
+                multipliers: Vec::new(),
+                dividers: Vec::new(),
             }),
         ]));
 

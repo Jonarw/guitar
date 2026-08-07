@@ -14,7 +14,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 pub mod hw;
 
-pub static MY_FRET: Fret = Fret::Fret8;
+pub static MY_FRET: Fret = Fret::Fret12;
 type FretSignal = Signal<ThreadModeRawMutex, Message>;
 
 static FRET_SIGNALS: [FretSignal; 6] = [
@@ -68,12 +68,12 @@ impl Config {
             pwm_hold_force: Percentage::new(45),
             pwm_dampen_force: Percentage::new(24),
             pwm_marginal_force: Percentage::new(13),
-            release_break_off_time: Duration::from_millis(3),
+            release_break_off_time: Duration::from_millis(1),
             dampen_to_fret_ramp_duration: Duration::from_millis(100),
             dampen_phase1_duration: Duration::from_millis(100),
-            fret_fast_phase1_duration: Duration::from_millis(50),
-            fret_fast_phase2_duration: Duration::from_millis(50),
-            fret_quiet_phase1_duration: Duration::from_millis(4),
+            fret_fast_phase1_duration: Duration::from_millis(5),
+            fret_fast_phase2_duration: Duration::from_millis(100),
+            fret_quiet_phase1_duration: Duration::from_millis(50),
             fret_quiet_phase2_duration: Duration::from_millis(100),
             unfret_phase1_duration: Duration::from_millis(500),
             unfret_phase2_duration: Duration::from_millis(100),
@@ -98,18 +98,32 @@ impl Config {
     }
 }
 
-async fn pwm_ramp(pwm: &mut GuitarStringPwm, start: u8, end: u8, duration: Duration) {
+async fn pwm_ramp(
+    pwm: &mut GuitarStringPwm,
+    start: u8,
+    end: u8,
+    duration: Duration,
+    signal: Option<&'static FretSignal>,
+) {
     let duration_per_percent = duration / end.abs_diff(start) as u32;
 
     let mut time = Instant::now();
     if start < end {
         for i in start..end {
+            if signal.map_or(false, |s| s.signaled()) {
+                break;
+            }
+
             pwm.set_duty_cycle_percent(i);
             time += duration_per_percent;
             Timer::at(time).await;
         }
     } else {
         for i in ((end + 1)..start).rev() {
+            if signal.map_or(false, |s| s.signaled()) {
+                break;
+            }
+
             pwm.set_duty_cycle_percent(i);
             time += duration_per_percent;
             Timer::at(time).await;
@@ -259,6 +273,7 @@ async fn fret_quiet(pwm: &mut GuitarStringPwm, state: FretState) {
                 pwm_dampen_force.into(),
                 pwm_max_force.into(),
                 fret_quiet_phase2_duration,
+                None,
             )
             .await;
         }
@@ -269,6 +284,7 @@ async fn fret_quiet(pwm: &mut GuitarStringPwm, state: FretState) {
                 pwm_dampen_force.into(),
                 pwm_max_force.into(),
                 fret_quiet_phase2_duration,
+                None,
             )
             .await;
         }
@@ -297,13 +313,13 @@ async fn dampen(pwm: &mut GuitarStringPwm, state: FretState) {
     }
 }
 
-async fn unfret(pwm: &mut GuitarStringPwm, state: FretState) {
-    let (release_break_off_time, pwm_marginal_force, unfret_phase1_duration) = {
+async fn unfret(pwm: &mut GuitarStringPwm, state: FretState, signal: &'static FretSignal) {
+    let (release_break_off_time, unfret_phase1_duration, pwm_dampen_force) = {
         let config = CONFIG.lock().await;
         (
             config.release_break_off_time,
-            config.pwm_marginal_force,
             config.unfret_phase1_duration,
+            config.pwm_dampen_force,
         )
     };
 
@@ -312,13 +328,9 @@ async fn unfret(pwm: &mut GuitarStringPwm, state: FretState) {
         FretState::Fretting => {
             pwm.set_duty_cycle_fully_off();
             Timer::after(release_break_off_time).await;
-            pwm.set_duty_cycle_percent(pwm_marginal_force.into());
-            Timer::after(unfret_phase1_duration).await;
+            pwm_ramp(pwm, pwm_dampen_force.into(), 3, unfret_phase1_duration, Some(signal)).await
         }
-        FretState::Dampening => {
-            pwm.set_duty_cycle_percent(pwm_marginal_force.into());
-            Timer::after(unfret_phase1_duration).await;
-        }
+        FretState::Dampening => pwm_ramp(pwm, pwm_dampen_force.into(), 3, unfret_phase1_duration, Some(signal)).await,
     }
 
     pwm.set_duty_cycle_fully_off();
@@ -343,7 +355,6 @@ async fn string_task(mut pwm: GuitarStringPwm, signal: &'static FretSignal) {
 
     loop {
         let action = signal.wait().await;
-
         defmt::info!("Processing action {}", action);
 
         match action {
@@ -356,7 +367,7 @@ async fn string_task(mut pwm: GuitarStringPwm, signal: &'static FretSignal) {
                 state = FretState::Fretting;
             }
             Message::Unfret(_, _) => {
-                unfret(&mut pwm, state).await;
+                unfret(&mut pwm, state, signal).await;
                 state = FretState::Idle;
             }
             Message::UnfretFast(_, _) | Message::Reset => {

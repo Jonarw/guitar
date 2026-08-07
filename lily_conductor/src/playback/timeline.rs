@@ -26,19 +26,26 @@ const STRING_CONFIGS: [(GuitarString, u8, u8); 6] = [
 const FRET_QUIET_PREP_MS: u64 = 20;
 /// Delay between issuing `FretFast` and the subsequent `Pluck`.
 const FRET_FAST_PREP_MS: u64 = 20;
+const UNFRET_PREP_MS: u64 = 50;
 /// How early `PluckVolume` is sent before the `Pluck` it applies to.
 /// If the gap since the previous pluck is smaller than this, the command is placed
 /// at the midpoint between the two plucks instead.
-const PLUCK_VOLUME_PREP_MS: u64 = 50;
+const PLUCK_VOLUME_PREP_MS: u64 = 200;
 /// How long to wait after `Dampen` before issuing `Unfret`
 /// (gives the string time to fully stop vibrating).
 const DAMPEN_SETTLE_MS: u64 = 500;
 /// Delay between the end-of-prologue and the first musical note.
 /// Gives the hardware time to initialise after `Reset` + `PluckEnable`.
-const INIT_DELAY_MS: u64 = 500;
+const INIT_DELAY_MS: u64 = 1000;
+const SCORE_END_DELAY_MS: u64 = 500;
+const UNFRET_QUIET_PREP_MS: u64 = 75;
+const UNFRET_QUIET_DURATION_MS: u64 = 150;
+const UNFRET_FAST_DURATION_MS: u64 = 10;
+const FRET_TO_DAMPEN_PREP_MS: u64 = 10;
 
-/// Fret used to mute an open string via `Dampen`/`Unfret`.
-/// (Open strings have no actuated fret, so we use a nearby one to stop vibration.)
+/// Fret used to mute an open string via `Dampen`
+/// Fret12 seems like the obvious choice, as it is in the middle and has good damping effect.
+/// However, Fret12 does a bad job of damping even harmonics, so we use Fret11.
 const OPEN_STRING_DAMPEN_FRET: Fret = Fret::Fret11;
 
 /// A protocol message paired with the wall-clock offset (from playback start) at which it
@@ -146,7 +153,14 @@ pub fn notes_to_ms(position: Notes, tempo_changes: &[(Notes, Tempo)]) -> u64 {
     }
 
     total_ms += fraction_to_ms(position - cursor, &current_tempo);
-    total_ms
+    total_ms + INIT_DELAY_MS
+}
+
+pub fn start_and_end_time(note: &Note, tempo_changes: &[(Notes, Tempo)]) -> (u64, u64) {
+    (
+        notes_to_ms(note.start, tempo_changes),
+        (notes_to_ms(note.start + note.length, tempo_changes)),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -182,35 +196,46 @@ impl CommandTimeline {
             time_ms: 0,
             message: Message::Reset,
         });
-        for (string, _, _) in STRING_CONFIGS {
+        for (i, (string, _, _)) in STRING_CONFIGS.iter().enumerate() {
             commands.push(TimedCommand {
                 time_ms: 0,
-                message: Message::PluckEnable(string),
+                message: Message::PluckVolume(
+                    *string,
+                    volume_table.range_for(i, Fret::NoFret).min.saturating_sub(10).into(),
+                ),
+            });
+
+            commands.push(TimedCommand {
+                time_ms: 300,
+                message: Message::PluckEnable(*string),
             });
         }
 
         // --- Musical notes ------------------------------------------------------
         let tempo_changes = &score.tempo_changes;
-        let mut score_end_ms = 0u64;
 
         for (part_idx, part) in score.parts.iter().enumerate() {
-            let (guitar_string, open_pitch, max_frets) = STRING_CONFIGS[part_idx];
-            Self::build_string_commands(
-                &mut commands,
-                guitar_string,
-                open_pitch,
-                max_frets,
-                part_idx,
-                volume_table,
-                &part.notes,
-                tempo_changes,
-                &mut score_end_ms,
-            );
+            Self::build_string_commands(&mut commands, part_idx, volume_table, &part.notes, tempo_changes);
+            // Self::post_process_commands(&mut string_commands);
+            // commands.append(&mut string_commands);
         }
 
+        let score_end_ms = commands.iter().map(|c| c.time_ms).max().unwrap_or_default();
+
         // --- Epilogue -----------------------------------------------------------
+
+        for (i, (string, _, _)) in STRING_CONFIGS.iter().enumerate() {
+            commands.push(TimedCommand {
+                time_ms: score_end_ms + SCORE_END_DELAY_MS,
+                message: Message::PluckVolume(
+                    *string,
+                    volume_table.range_for(i, Fret::NoFret).min.saturating_sub(10).into(),
+                ),
+            });
+        }
+
         commands.push(TimedCommand {
-            time_ms: score_end_ms + 1_000,
+            time_ms: score_end_ms + SCORE_END_DELAY_MS * 2,
             message: Message::Reset,
         });
 
@@ -220,25 +245,47 @@ impl CommandTimeline {
         Self { commands }
     }
 
+    fn post_process_commands(commands: &mut Vec<TimedCommand>) {
+        for i in 0..(commands.len() - 1) {
+            let current = &commands[i];
+
+            if let Message::Unfret(string, fret) = current.message {
+                let next_fret_command = commands.iter().skip(i).find(|c| {
+                    matches!(
+                        c.message,
+                        Message::FretFast(_, _)
+                            | Message::FretQuiet(_, _)
+                            | Message::Dampen(_, _)
+                            | Message::FretAdaptive(_, _)
+                    )
+                });
+
+                if let Some(next_fret_command) = next_fret_command
+                    && next_fret_command.time_ms - current.time_ms < UNFRET_QUIET_DURATION_MS
+                {
+                    commands[i] = TimedCommand {
+                        time_ms: current.time_ms + UNFRET_PREP_MS,
+                        message: Message::UnfretFast(string, fret),
+                    };
+                }
+            }
+        }
+    }
+
     fn build_string_commands(
         commands: &mut Vec<TimedCommand>,
-        guitar_string: GuitarString,
-        open_pitch: u8,
-        max_frets: u8,
-        part_index: usize,
+        string_index: usize,
         volume_table: &StringVolumeTable,
         notes: &[Note],
         tempo_changes: &[(Notes, Tempo)],
-        score_end_ms: &mut u64,
     ) {
+        let (guitar_string, open_pitch, max_frets) = STRING_CONFIGS[string_index];
+
         let mut last_pluck_volume: Option<u8> = None;
         let mut prev_pluck_ms: Option<u64> = None;
 
         for (i, note) in notes.iter().enumerate() {
-            let next = notes.get(i + 1);
-            let start_ms = notes_to_ms(note.start, tempo_changes) + INIT_DELAY_MS;
-            let end_ms = notes_to_ms(note.start + note.length, tempo_changes) + INIT_DELAY_MS;
-            *score_end_ms = (*score_end_ms).max(end_ms);
+            let (start_ms, end_ms) = start_and_end_time(note, tempo_changes);
 
             let fret = midi_pitch_to_fret(note.pitch.pitch, open_pitch, max_frets);
             let prep = fret_prep_ms(note.finger_technique);
@@ -250,13 +297,13 @@ impl CommandTimeline {
                     FingerTechnique::Loud => Message::FretFast(guitar_string, fret),
                 };
                 commands.push(TimedCommand {
-                    time_ms: start_ms.saturating_sub(prep),
+                    time_ms: start_ms - prep,
                     message: fret_msg,
                 });
             }
 
             // --- Volume (only when it changes) ----------------------------------
-            let pluck_vol = volume_table.range_for(part_index, fret).map_midi_volume(note.volume);
+            let pluck_vol = volume_table.range_for(string_index, fret).map_midi_volume(note.volume);
             if last_pluck_volume != Some(pluck_vol) {
                 // Issue PluckVolume PLUCK_VOLUME_PREP_MS before the pluck so the hardware
                 // has time to apply it. If the previous pluck was closer than that, place
@@ -264,7 +311,11 @@ impl CommandTimeline {
                 let volume_ms = match prev_pluck_ms {
                     Some(prev) => {
                         let ideal = start_ms.saturating_sub(PLUCK_VOLUME_PREP_MS);
-                        if ideal > prev { ideal } else { (prev + start_ms) / 2 }
+                        if ideal > prev + PLUCK_VOLUME_PREP_MS / 2 {
+                            ideal
+                        } else {
+                            (prev + start_ms) / 2
+                        }
                     }
                     None => start_ms.saturating_sub(PLUCK_VOLUME_PREP_MS),
                 };
@@ -283,56 +334,130 @@ impl CommandTimeline {
             prev_pluck_ms = Some(start_ms);
 
             // --- End-of-note: dampen / unfret -----------------------------------
-            let immediately_followed = next.map(|n| n.start == note.start + note.length).unwrap_or(false);
+            if fret == Fret::NoFret {
+                const DAMPEN_FRET: Fret = Fret::Fret11;
+                // current note is an open string
+                if let Some(next_note) = notes.get(i + 1) {
+                    // not the last note on the string -> depending on when the next note is, dampen the open string
+                    let next_start_ms = notes_to_ms(next_note.start, tempo_changes);
+                    let delta = next_start_ms - end_ms;
 
-            if immediately_followed {
-                // No damping; but if the current fret would interfere with the next
-                // note, we must unfret it before that note's fret command.
-                let next = next.unwrap();
-                let next_fret = midi_pitch_to_fret(next.pitch.pitch, open_pitch, max_frets);
-                let current_interferes =
-                    fret != Fret::NoFret && (next_fret == Fret::NoFret || (next_fret as u8) < (fret as u8));
+                    const DAMPEN_THRESHOLD: u64 = FRET_TO_DAMPEN_PREP_MS + UNFRET_QUIET_PREP_MS;
+                    match delta {
+                        0..DAMPEN_THRESHOLD => {} // very little time -> do nothing
+                        _ => {
+                            // dampen the open string until we play another note or DAMPEN_SETTLE_MS
+                            commands.push(TimedCommand {
+                                time_ms: end_ms,
+                                message: Message::Dampen(guitar_string, DAMPEN_FRET),
+                            });
 
-                if current_interferes {
-                    let next_start_ms = notes_to_ms(next.start, tempo_changes) + INIT_DELAY_MS;
-                    // Unfret just before the next fret command (or next pluck if open).
-                    let unfret_ms = if next_fret != Fret::NoFret {
-                        next_start_ms.saturating_sub(fret_prep_ms(next.finger_technique))
-                    } else {
-                        next_start_ms
-                    };
+                            let dampen_end = (end_ms + DAMPEN_SETTLE_MS)
+                                .min(next_start_ms - UNFRET_QUIET_DURATION_MS - FRET_QUIET_PREP_MS - 1);
+                            commands.push(TimedCommand {
+                                time_ms: dampen_end,
+                                message: Message::Dampen(guitar_string, DAMPEN_FRET),
+                            });
+                        }
+                    }
+                } else {
+                    // last note on this string -> dampen and unfret
                     commands.push(TimedCommand {
-                        time_ms: unfret_ms,
-                        message: Message::Unfret(guitar_string, fret),
+                        time_ms: end_ms,
+                        message: Message::Dampen(guitar_string, DAMPEN_FRET),
+                    });
+
+                    commands.push(TimedCommand {
+                        time_ms: end_ms + DAMPEN_SETTLE_MS,
+                        message: Message::Unfret(guitar_string, DAMPEN_FRET),
                     });
                 }
             } else {
-                // Dampen to stop the string vibrating.
-                let dampen_fret = if fret == Fret::NoFret {
-                    OPEN_STRING_DAMPEN_FRET
-                } else {
-                    fret
-                };
-                commands.push(TimedCommand {
-                    time_ms: end_ms,
-                    message: Message::Dampen(guitar_string, dampen_fret),
-                });
+                // current note is not an open string
+                let next_note_same_or_lower_fret = notes.iter().skip(i).find(|n| n.pitch.pitch < note.pitch.pitch);
+                if let Some(next_note_same_or_lower_fret) = next_note_same_or_lower_fret {
+                    // There are still notes left with same or lower fret. We need to take these into account
+                    // when planning our dampen / unfret sequence.
+                    let next_start_ms = notes_to_ms(next_note_same_or_lower_fret.start, tempo_changes);
+                    let delta = next_start_ms - end_ms;
+                    if next_note_same_or_lower_fret.pitch == note.pitch {
+                        // next note that is relevant for us is on the same fret
+                        // -> depending on when that is we potentially dampen and unfret
+                        const DAMPEN_THRESHOLD: u64 = DAMPEN_SETTLE_MS + UNFRET_QUIET_DURATION_MS + FRET_QUIET_PREP_MS;
+                        match delta {
+                            0..FRET_TO_DAMPEN_PREP_MS => {} // no or very little time until next note, we just stay fretted
+                            FRET_TO_DAMPEN_PREP_MS..DAMPEN_THRESHOLD => {
+                                // we have some time to dampen, but not enough time to unfret
+                                commands.push(TimedCommand {
+                                    time_ms: end_ms,
+                                    message: Message::Dampen(guitar_string, fret),
+                                });
+                            }
+                            _ => {
+                                // we have so much time that we can dampen and completely unfret until we need to do something again
+                                commands.push(TimedCommand {
+                                    time_ms: end_ms,
+                                    message: Message::Dampen(guitar_string, fret),
+                                });
 
-                // Unfret after the string has had time to stop, but not so late
-                // that it would block a next note.
-                let default_unfret_ms = end_ms + DAMPEN_SETTLE_MS;
-                let unfret_ms = if let Some(next) = next {
-                    let next_start_ms = notes_to_ms(next.start, tempo_changes) + INIT_DELAY_MS;
-                    let next_fret_cmd_ms = next_start_ms.saturating_sub(fret_prep_ms(next.finger_technique));
-                    default_unfret_ms.min(next_fret_cmd_ms)
-                } else {
-                    default_unfret_ms
-                };
+                                commands.push(TimedCommand {
+                                    time_ms: end_ms + DAMPEN_SETTLE_MS,
+                                    message: Message::Unfret(guitar_string, fret),
+                                });
+                            }
+                        }
+                    } else {
+                        // next note that is relevant for us is on a lower fret
+                        // -> we need to be clear of the string by the time this is played
+                        match delta {
+                            0..UNFRET_FAST_DURATION_MS => {
+                                // no or very little time until next note, unfret as fast as we can
+                                commands.push(TimedCommand {
+                                    time_ms: end_ms,
+                                    message: Message::UnfretFast(guitar_string, fret),
+                                });
+                            }
+                            UNFRET_FAST_DURATION_MS..UNFRET_QUIET_PREP_MS => {
+                                // we have a little bit of time, but not enough to unfret quietly, so dampen for a bit and then unfret fast
+                                commands.push(TimedCommand {
+                                    time_ms: end_ms,
+                                    message: Message::Dampen(guitar_string, fret),
+                                });
 
-                commands.push(TimedCommand {
-                    time_ms: unfret_ms,
-                    message: Message::Unfret(guitar_string, dampen_fret),
-                });
+                                commands.push(TimedCommand {
+                                    time_ms: end_ms + delta - UNFRET_FAST_DURATION_MS,
+                                    message: Message::UnfretFast(guitar_string, fret),
+                                });
+                            }
+                            _ => {
+                                // we have enough time to unfret quietly, dampen until then or until DAMPEN_SETTLE_MS
+                                commands.push(TimedCommand {
+                                    time_ms: end_ms,
+                                    message: Message::Dampen(guitar_string, fret),
+                                });
+
+                                let dampen_end_time =
+                                    (end_ms + DAMPEN_SETTLE_MS).min(next_start_ms - UNFRET_QUIET_PREP_MS);
+
+                                commands.push(TimedCommand {
+                                    time_ms: dampen_end_time,
+                                    message: Message::Unfret(guitar_string, fret),
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    // no more notes left with a same or lower fret -> dampen and unfret
+                    commands.push(TimedCommand {
+                        time_ms: end_ms,
+                        message: Message::Dampen(guitar_string, fret),
+                    });
+
+                    commands.push(TimedCommand {
+                        time_ms: end_ms + DAMPEN_SETTLE_MS,
+                        message: Message::Unfret(guitar_string, fret),
+                    });
+                }
             }
         }
     }
@@ -346,7 +471,7 @@ impl CommandTimeline {
 mod tests {
     use super::*;
     use crate::{machine_score::timing::Fraction, playback::string_volume::StringVolumeRange};
-    use lilyparse::syntax::ast::{NoteDuration, Tempo};
+    use lilyparse::syntax::ast::{self, *};
 
     fn quarter_tempo(bpm: u16) -> Tempo {
         Tempo {
@@ -406,52 +531,41 @@ mod tests {
             }),
             global: Global::default(),
             parts: [
-                LilyPart {
-                    name: "stringOne".to_owned(),
-                    events: first_events,
-                },
+                empty("stringOne"),
                 empty("stringTwo"),
                 empty("stringThree"),
                 empty("stringFour"),
                 empty("stringFive"),
-                empty("stringSix"),
+                LilyPart {
+                    name: "stringSix".to_owned(),
+                    events: first_events,
+                },
             ],
         }
     }
 
-    fn lily_note(
-        pitch: lilyparse::syntax::ast::PitchClass,
-        octave: i8,
-        ratio: u16,
-        articulation: lilyparse::syntax::ast::Articulation,
-    ) -> lilyparse::syntax::ast::Event {
-        lily_note_with_dynamic(pitch, octave, ratio, articulation, lilyparse::syntax::ast::Dynamic::MF)
+    fn lily_note(pitch: PitchClass, octave: i8, ratio: u16, articulation: Articulation) -> Event {
+        lily_note_with_dynamic(pitch, octave, ratio, articulation, Dynamic::MF)
     }
 
     fn lily_note_with_dynamic(
-        pitch: lilyparse::syntax::ast::PitchClass,
+        pitch: PitchClass,
         octave: i8,
         ratio: u16,
-        articulation: lilyparse::syntax::ast::Articulation,
-        dynamic: lilyparse::syntax::ast::Dynamic,
-    ) -> lilyparse::syntax::ast::Event {
-        use lilyparse::syntax::ast::*;
-        Event::Note(Note {
-            class: pitch,
-            accidental: Accidental::None,
-            octave,
-            duration: Some(NoteDuration {
-                ratio,
-                augmentation: 0,
-                tuplet: None,
-            }),
-            dynamic: Some(dynamic),
-            articulation,
-            crescendo: None,
-            tie: false,
-            fingering: None,
-            slur: None,
-        })
+        articulation: Articulation,
+        dynamic: Dynamic,
+    ) -> Event {
+        let mut ret = ast::Note::default();
+        ret.class = pitch;
+        ret.octave = octave;
+        ret.duration = Some(NoteDuration {
+            ratio,
+            augmentation: 0,
+            tuplet: None,
+        });
+        ret.articulation = articulation;
+        ret.dynamic = Some(dynamic);
+        Event::Note(ret)
     }
 
     /// Builds a MachineScore directly from notes + tempo changes, bypassing LilyPond parsing.
@@ -470,15 +584,15 @@ mod tests {
         MachineScore {
             title: "Test".to_owned(),
             parts: [
-                MachineScorePart {
-                    name: "stringOne".to_owned(),
-                    notes,
-                },
+                empty("stringOne"),
                 empty("stringTwo"),
                 empty("stringThree"),
                 empty("stringFour"),
                 empty("stringFive"),
-                empty("stringSix"),
+                MachineScorePart {
+                    name: "stringSix".to_owned(),
+                    notes,
+                },
             ],
             tempo_changes,
         }
@@ -734,8 +848,9 @@ mod tests {
                             dynamic: None,
                             articulation: Articulation::none(),
                             crescendo: None,
-                            multiplier: None,
                             slur: None,
+                            multipliers: Vec::new(),
+                            dividers: Vec::new(),
                         }),
                         lily_note(PitchClass::A, -1, 4, Articulation::Staccato), // Fret5
                     ],

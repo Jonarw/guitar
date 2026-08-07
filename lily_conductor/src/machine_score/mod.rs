@@ -255,29 +255,21 @@ mod tests {
         articulation: Articulation,
         crescendo: Option<Crescendo>,
     ) -> LilyNote {
-        LilyNote {
-            class,
-            accidental: Accidental::None,
-            octave,
-            duration,
-            dynamic,
-            articulation,
-            crescendo,
-            tie: false,
-            fingering: None,
-            slur: None,
-        }
+        let mut ret = LilyNote::default();
+        ret.class = class;
+        ret.octave = octave;
+        ret.duration = duration;
+        ret.dynamic = dynamic;
+        ret.articulation = articulation;
+        ret.crescendo = crescendo;
+        ret
     }
 
     fn lily_rest(duration: Option<NoteDuration>, dynamic: Option<Dynamic>) -> Rest {
-        Rest {
-            duration,
-            dynamic,
-            articulation: Articulation::none(),
-            crescendo: None,
-            multiplier: None,
-            slur: None,
-        }
+        let mut ret = Rest::default();
+        ret.duration = duration;
+        ret.dynamic = dynamic;
+        ret
     }
 
     fn empty_part(name: &str) -> LilyPart {

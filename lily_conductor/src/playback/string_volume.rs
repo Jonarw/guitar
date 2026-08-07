@@ -127,7 +127,7 @@ impl StringVolumeTable {
                 .ok_or_else(|| "Range should contain items")?;
             let span = (max - min) * 2;
             for item in range {
-                item.max = item.min + span;
+                item.max = item.min.saturating_add(span);
             }
         }
 
@@ -137,12 +137,12 @@ impl StringVolumeTable {
 
 fn parse_string_name(s: &str) -> Option<usize> {
     match s.trim() {
-        "E" => Some(0),
-        "A" => Some(1),
-        "D" => Some(2),
-        "G" => Some(3),
-        "B" => Some(4),
-        "e" => Some(5),
+        "E" => Some(5),
+        "A" => Some(4),
+        "D" => Some(3),
+        "G" => Some(2),
+        "B" => Some(1),
+        "e" => Some(0),
         _ => None,
     }
 }
