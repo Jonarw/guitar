@@ -8,7 +8,8 @@
     "args": [
       "/home/jon/Documents/test2.ly",
       "--calibration",
-      "calibration.csv"
+      "calibration.csv",
+      "--export"
     ],
     "cwd": "$ZED_WORKTREE_ROOT",
     "sourceLanguages": [

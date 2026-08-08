@@ -135,7 +135,7 @@ fn fraction_to_ms(duration: Notes, tempo: &Tempo) -> u64 {
 /// milliseconds, honouring all tempo changes in `tempo_changes` (sorted by position).
 pub fn notes_to_ms(position: Notes, tempo_changes: &[(Notes, Tempo)]) -> u64 {
     if position == Notes::zero() {
-        return 0;
+        return INIT_DELAY_MS;
     }
 
     let default_tempo = Tempo::default();
@@ -374,7 +374,7 @@ impl CommandTimeline {
                 }
             } else {
                 // current note is not an open string
-                let next_note_same_or_lower_fret = notes.iter().skip(i).find(|n| n.pitch.pitch < note.pitch.pitch);
+                let next_note_same_or_lower_fret = notes.iter().skip(i + 1).find(|n| n.pitch.pitch <= note.pitch.pitch);
                 if let Some(next_note_same_or_lower_fret) = next_note_same_or_lower_fret {
                     // There are still notes left with same or lower fret. We need to take these into account
                     // when planning our dampen / unfret sequence.

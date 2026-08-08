@@ -1,7 +1,11 @@
 pub mod machine_score;
 pub mod playback;
 
-use std::{env, fs, process::ExitCode};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use lilyparse::syntax::parse;
 use machine_score::MachineScore;
@@ -31,8 +35,8 @@ fn run() -> Result<(), String> {
     let bin_name = args.next().unwrap_or_else(|| "lily_conductor".to_owned());
     let args: Vec<String> = args.collect();
 
-    // Parse: <lily-file> [--calibration <csv-path>]
-    let (file_path, calibration_path) = parse_args(&bin_name, &args)?;
+    // Parse: <lily-file> [--calibration <csv-path>] [--export]
+    let (file_path, calibration_path, export) = parse_args(&bin_name, &args)?;
 
     let file_contents = fs::read_to_string(file_path).map_err(|err| format!("Failed to read '{file_path}': {err}"))?;
 
@@ -43,6 +47,18 @@ fn run() -> Result<(), String> {
     let volume_table = build_volume_table(calibration_path)?;
 
     let timeline = CommandTimeline::from_machine_score_with_volume_table(&machine_score, &volume_table);
+
+    if export {
+        let export_path = export_path_for(file_path);
+        let script = playback::export::to_conductor_script(&timeline)?;
+        fs::write(&export_path, script).map_err(|err| format!("Failed to write '{}': {err}", export_path.display()))?;
+        println!(
+            "Exported {} command(s) to '{}'.",
+            timeline.commands.len(),
+            export_path.display()
+        );
+        return Ok(());
+    }
 
     let mut port = serialport::new(DEFAULT_SERIAL_PORT, BAUD_RATE)
         .timeout(std::time::Duration::from_millis(100))
@@ -55,10 +71,17 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn parse_args<'a>(bin_name: &str, args: &'a [String]) -> Result<(&'a str, Option<&'a str>), String> {
-    let usage = format!("Usage: {bin_name} <path-to-lilypond-file> [--calibration <csv-path>]");
+/// Derives the export file path from the input LilyPond path by replacing its
+/// extension with `.txt` (e.g. `song.ly` becomes `song.txt`).
+fn export_path_for(lily_path: &str) -> PathBuf {
+    Path::new(lily_path).with_extension("txt")
+}
+
+fn parse_args<'a>(bin_name: &str, args: &'a [String]) -> Result<(&'a str, Option<&'a str>, bool), String> {
+    let usage = format!("Usage: {bin_name} <path-to-lilypond-file> [--calibration <csv-path>] [--export]");
     let mut lily_path: Option<&str> = None;
     let mut calibration_path: Option<&str> = None;
+    let mut export = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -69,6 +92,9 @@ fn parse_args<'a>(bin_name: &str, args: &'a [String]) -> Result<(&'a str, Option
                         .map(|s| s.as_str())
                         .ok_or_else(|| format!("--calibration requires a path argument\n{usage}"))?,
                 );
+            }
+            "--export" => {
+                export = true;
             }
             arg if !arg.starts_with('-') => {
                 if lily_path.is_some() {
@@ -81,7 +107,7 @@ fn parse_args<'a>(bin_name: &str, args: &'a [String]) -> Result<(&'a str, Option
         i += 1;
     }
     let lily_path = lily_path.ok_or_else(|| usage.clone())?;
-    Ok((lily_path, calibration_path))
+    Ok((lily_path, calibration_path, export))
 }
 
 fn main() -> ExitCode {
