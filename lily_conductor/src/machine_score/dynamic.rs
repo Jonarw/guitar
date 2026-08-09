@@ -3,7 +3,8 @@ use lilyparse::syntax::ast::{self, Articulation, Crescendo, Dynamic, Event, Lily
 
 use crate::machine_score::{
     MidiVolume,
-    timing::{Fraction, NoteTimingInfo, Notes, TimedEvent, TimingHelper},
+    event_timer::{EventTimer, Fraction, Notes, TimedEvent},
+    note_timer::NoteTimingInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -268,7 +269,11 @@ impl<'a> DynamicBuilder<'a> {
 
     /// Updates running state from the current timeline event.
     fn update_state(&mut self, timed_event: &TimedEvent) {
-        let TimedEvent { event, note_stamp } = timed_event;
+        let TimedEvent {
+            event,
+            note_stamp,
+            duration: _,
+        } = timed_event;
 
         match event {
             Event::Note(note) => {
@@ -289,7 +294,7 @@ impl<'a> DynamicBuilder<'a> {
 
     /// Scans the whole part and captures crescendo blocks.
     fn init(&mut self) {
-        let timed_events = TimingHelper::get_timed_events(self.part);
+        let timed_events = EventTimer::get_timed_events(self.part);
 
         for timed_event in timed_events {
             self.update_state(&timed_event);
@@ -423,7 +428,7 @@ impl DynamicHelper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lilyparse::syntax::ast::{Articulation, Note, NoteDuration, TimeSignature};
+    use lilyparse::syntax::ast::{Articulation, Note, NoteDuration, NoteOrRest, TimeSignature};
 
     fn no_boost() -> DynamicConfig {
         DynamicConfig {
@@ -472,13 +477,12 @@ mod tests {
         NoteDuration {
             ratio: 4,
             augmentation: 0,
-            tuplet: None,
         }
     }
 
     fn timing_at(position: Fraction, ts: TimeSignature) -> NoteTimingInfo {
         NoteTimingInfo {
-            note: note(None, None, None),
+            note_or_rest: NoteOrRest::Note(note(None, None, None)),
             time_signature: ts,
             bar_number: 0,
             position_in_bar: position,
@@ -500,7 +504,7 @@ mod tests {
             Event::Note(note(Some(quarter()), None, None)),
             Event::Note(note(Some(quarter()), None, Some(Crescendo::End))),
         ]);
-        let timed_events = TimingHelper::get_timed_events(&part);
+        let timed_events = EventTimer::get_timed_events(&part);
         let mut helper = DynamicBuilder::build_with_config(&part, no_boost());
 
         let ts = TimeSignature::default();
@@ -529,7 +533,7 @@ mod tests {
             Event::Rest(rest(Some(quarter()), Some(Dynamic::P), None)),
             Event::Note(note(Some(quarter()), None, None)),
         ]);
-        let timed_events = TimingHelper::get_timed_events(&part);
+        let timed_events = EventTimer::get_timed_events(&part);
         let mut helper = DynamicBuilder::build_with_config(&part, no_boost());
 
         let ts = TimeSignature::default();

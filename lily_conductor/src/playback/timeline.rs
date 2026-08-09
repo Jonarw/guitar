@@ -2,7 +2,7 @@ use fraction::Zero;
 use lilyparse::syntax::ast::Tempo;
 use protocol::{Fret, GuitarString, Message};
 
-use crate::machine_score::timing::Notes;
+use crate::machine_score::event_timer::Notes;
 use crate::machine_score::{FingerTechnique, MachineScore, Note, PluckTechnique};
 use crate::playback::string_volume::StringVolumeTable;
 
@@ -95,7 +95,7 @@ pub fn midi_pitch_to_fret(pitch_value: u8, open_pitch: u8, max_frets: u8) -> Fre
     let fret_num = pitch_value - open_pitch;
     assert!(
         fret_num <= max_frets,
-        "Fret {fret_num} exceeds the {max_frets} controllable frets on this string",
+        "Fret {fret_num} (required by pitch {pitch_value}) exceeds the {max_frets} controllable frets on this string with pitch {open_pitch}",
     );
     fret_from_number(fret_num)
 }
@@ -438,7 +438,7 @@ impl CommandTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{machine_score::timing::Fraction, playback::string_volume::StringVolumeRange};
+    use crate::{machine_score::event_timer::Fraction, playback::string_volume::StringVolumeRange};
     use lilyparse::syntax::ast::{self, *};
 
     fn quarter_tempo(bpm: u16) -> Tempo {
@@ -446,7 +446,6 @@ mod tests {
             note_duration: NoteDuration {
                 ratio: 4,
                 augmentation: 0,
-                tuplet: None,
             },
             bpm,
         }
@@ -532,11 +531,7 @@ mod tests {
         let mut ret = ast::Note::default();
         ret.class = pitch;
         ret.octave = octave;
-        ret.duration = Some(NoteDuration {
-            ratio,
-            augmentation: 0,
-            tuplet: None,
-        });
+        ret.duration = Some(NoteDuration { ratio, augmentation: 0 });
         ret.articulation = articulation;
         ret.dynamic = Some(dynamic);
         Event::Note(ret)
@@ -546,28 +541,15 @@ mod tests {
     /// This lets tests set up precise ms-level timing without needing a full LilyScore.
     fn make_machine_score(
         notes: Vec<crate::machine_score::Note>,
-        tempo_changes: Vec<(crate::machine_score::timing::Notes, lilyparse::syntax::ast::Tempo)>,
+        tempo_changes: Vec<(crate::machine_score::event_timer::Notes, lilyparse::syntax::ast::Tempo)>,
     ) -> crate::machine_score::MachineScore {
         use crate::machine_score::{MachineScore, MachineScorePart};
-        fn empty(name: &str) -> MachineScorePart {
-            MachineScorePart {
-                name: name.to_owned(),
-                notes: vec![],
-            }
+        fn empty() -> MachineScorePart {
+            MachineScorePart { notes: vec![] }
         }
         MachineScore {
             title: "Test".to_owned(),
-            parts: [
-                empty("stringOne"),
-                empty("stringTwo"),
-                empty("stringThree"),
-                empty("stringFour"),
-                empty("stringFive"),
-                MachineScorePart {
-                    name: "stringSix".to_owned(),
-                    notes,
-                },
-            ],
+            parts: [empty(), empty(), empty(), empty(), empty(), MachineScorePart { notes }],
             tempo_changes,
         }
     }
@@ -611,7 +593,7 @@ mod tests {
 
     #[test]
     fn pluck_volume_issued_before_pluck_by_prep_delay() {
-        use crate::machine_score::timing::Fraction;
+        use crate::machine_score::event_timer::Fraction;
         use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
         // Single note: PluckVolume should be at start_ms - PLUCK_VOLUME_PREP_MS.
         let note = Note {
@@ -621,6 +603,7 @@ mod tests {
             start: Fraction::new(0u32, 1u32),
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
+            bar_number: 0,
         };
         let ms = CommandTimeline::from_machine_score(&make_machine_score(vec![note], vec![]));
 
@@ -644,7 +627,7 @@ mod tests {
 
     #[test]
     fn pluck_volume_at_midpoint_when_plucks_are_close() {
-        use crate::machine_score::timing::Fraction;
+        use crate::machine_score::event_timer::Fraction;
         use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
         use lilyparse::syntax::ast::{NoteDuration, Tempo};
         // Tempo: quarter = 3000 BPM → 20 ms per quarter note.
@@ -654,7 +637,6 @@ mod tests {
             note_duration: NoteDuration {
                 ratio: 4,
                 augmentation: 0,
-                tuplet: None,
             },
             bpm: 3000,
         };
@@ -665,6 +647,7 @@ mod tests {
             start: Fraction::new(0u32, 1u32),
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
+            bar_number: 0,
         };
         let note2 = Note {
             pitch: MidiPitch::new(45),
@@ -673,6 +656,7 @@ mod tests {
             start: Fraction::new(1u32, 4u32),
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
+            bar_number: 0,
         };
         let tempo_changes = vec![(Fraction::new(0u32, 1u32), fast_tempo)];
         let ms = CommandTimeline::from_machine_score(&make_machine_score(vec![note1, note2], tempo_changes));
@@ -699,7 +683,7 @@ mod tests {
 
     #[test]
     fn pluck_volume_uses_calibrated_string_range() {
-        use crate::machine_score::timing::Fraction;
+        use crate::machine_score::event_timer::Fraction;
         use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
 
         let volume_table = StringVolumeTable::uniform(StringVolumeRange { min: 149, max: 220 });
@@ -711,6 +695,7 @@ mod tests {
             start: Fraction::new(0u32, 1u32),
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
+            bar_number: 0,
         };
         let note2 = Note {
             pitch: MidiPitch::new(45),
@@ -719,6 +704,7 @@ mod tests {
             start: Fraction::new(1u32, 4u32),
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
+            bar_number: 0,
         };
 
         let timeline = CommandTimeline::from_machine_score_with_volume_table(
@@ -811,7 +797,6 @@ mod tests {
                             duration: Some(NoteDuration {
                                 ratio: 8,
                                 augmentation: 0,
-                                tuplet: None,
                             }),
                             dynamic: None,
                             articulation: Articulation::none(),

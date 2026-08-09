@@ -77,16 +77,17 @@ pub enum Event {
     Rest(Rest),
     TimeSignature(TimeSignature),
     Tempo(Tempo),
+    Tuplet(Tuplet),
 }
 
 /// Tuplet ratio (`num` in the time of `den`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Tuplet {
     pub num: u8,
     pub den: u8,
+    pub events: Vec<Event>,
 }
 
-/// Tuplet ratio (Rest duration * `num` / `den`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestMultiplier {
     pub num: u8,
@@ -100,7 +101,6 @@ pub struct RestMultiplier {
 pub struct NoteDuration {
     pub ratio: u16,
     pub augmentation: u8,
-    pub tuplet: Option<Tuplet>,
 }
 
 impl Default for NoteDuration {
@@ -108,9 +108,14 @@ impl Default for NoteDuration {
         Self {
             ratio: 4,
             augmentation: 0,
-            tuplet: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum NoteOrRest {
+    Note(Note),
+    Rest(Rest),
 }
 
 /// Pitched event.

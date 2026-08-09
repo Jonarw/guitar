@@ -84,11 +84,7 @@ fn octave(input: &mut &str) -> Result<i8> {
 fn duration(input: &mut &str) -> Result<NoteDuration> {
     (digit1.parse_to(), repeat(0.., '.').fold(|| 0, |i, _| i + 1))
         .context(Label("Duration"))
-        .map(|(ratio, augmentation)| NoteDuration {
-            ratio,
-            augmentation,
-            tuplet: None,
-        })
+        .map(|(ratio, augmentation)| NoteDuration { ratio, augmentation })
         .parse_next(input)
 }
 
@@ -277,12 +273,29 @@ fn note(input: &mut &str) -> Result<Note> {
         )
 }
 
+fn tuplet(input: &mut &str) -> Result<Tuplet> {
+    seq!(_: "\\tuplet",
+        _: discard,
+        digit1.parse_to(),
+        _: '/',
+        digit1.parse_to(),
+        _: discard,
+        _: '{',
+        _: discard,
+        events,
+        _: discard,
+        _: '}')
+    .map(|(num, den, events)| Tuplet { num, den, events })
+    .parse_next(input)
+}
+
 fn event(input: &mut &str) -> Result<Event> {
     alt((
         rest.map(Event::Rest),
         note.map(Event::Note),
         tempo.map(Event::Tempo),
         time.map(Event::TimeSignature),
+        tuplet.map(Event::Tuplet),
     ))
     .context(Label("Event"))
     .parse_next(input)
@@ -532,7 +545,6 @@ fn parses_duration() {
         Ok(NoteDuration {
             ratio: 4,
             augmentation: 0,
-            tuplet: None,
         })
     );
 
@@ -541,7 +553,6 @@ fn parses_duration() {
         Ok(NoteDuration {
             ratio: 16,
             augmentation: 2,
-            tuplet: None,
         })
     );
 }
@@ -558,7 +569,6 @@ fn parses_note() {
         Some(NoteDuration {
             ratio: 8,
             augmentation: 1,
-            tuplet: None,
         })
     );
     assert_eq!(note.dynamic, Some(Dynamic::MF));
@@ -574,7 +584,6 @@ fn parses_rest() {
         Some(NoteDuration {
             ratio: 4,
             augmentation: 0,
-            tuplet: None,
         })
     );
     assert_eq!(rest.dynamic, Some(Dynamic::P));
@@ -588,7 +597,6 @@ fn parses_tempo() {
             note_duration: NoteDuration {
                 ratio: 4,
                 augmentation: 1,
-                tuplet: None,
             },
             bpm: 120
         })
@@ -733,7 +741,6 @@ fn parses_full_score() {
                     note_duration: NoteDuration {
                         ratio: 4,
                         augmentation: 2,
-                        tuplet: None,
                     },
                     bpm: 90
                 }
@@ -776,7 +783,6 @@ fn parses_full_score() {
                 Some(NoteDuration {
                     ratio: 4,
                     augmentation: 0,
-                    tuplet: None,
                 })
             );
             assert_eq!(note.dynamic, Some(Dynamic::MF));

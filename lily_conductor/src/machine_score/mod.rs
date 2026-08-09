@@ -1,15 +1,16 @@
-use std::panic;
+use std::{mem, panic};
 
-use lilyparse::syntax::ast::{self, Articulation, Event, LilyPart, LilyScore, Rest, Slur, Tempo};
-use timing::TimingHelper;
+use lilyparse::syntax::ast::{self, Articulation, LilyPart, LilyScore, NoteOrRest, Rest, Slur};
 
 use crate::machine_score::{
     dynamic::{DynamicBuilder, DynamicHelper},
-    timing::Notes,
+    event_timer::{EventTimer, Notes, TempoChanges, TimeSignatureChanges},
+    note_timer::{NoteTimer, NoteTimingInfo},
 };
 
 pub mod dynamic;
-pub mod timing;
+pub mod event_timer;
+pub mod note_timer;
 
 /// MIDI pitch value in range `0..=127`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +57,7 @@ pub struct Note {
     pub start: Notes,
     pub pluck_technique: PluckTechnique,
     pub finger_technique: FingerTechnique,
+    pub bar_number: u32,
 }
 
 /// Plucking actuator strategy.
@@ -78,20 +80,18 @@ pub enum FingerTechnique {
 pub struct MachineScore {
     pub title: String,
     pub parts: [MachineScorePart; 6],
-    pub tempo_changes: Vec<(Notes, Tempo)>,
+    pub tempo_changes: TempoChanges,
 }
 
 /// Converted events for one part/string.
 #[derive(Debug, PartialEq, Eq)]
 pub struct MachineScorePart {
-    pub name: String,
     pub notes: Vec<Note>,
 }
 
 /// Stateful converter for one LilyPond part.
-struct LilyPartConverter<'a> {
-    lily_part: &'a LilyPart,
-    timing_helper: &'a mut TimingHelper,
+struct LilyPartConverter {
+    timed_notes: Vec<NoteTimingInfo>,
     dynamic_helper: DynamicHelper,
     notes: Vec<Note>,
     articulation: Articulation,
@@ -99,14 +99,13 @@ struct LilyPartConverter<'a> {
     slur_in_progress: bool,
 }
 
-impl<'a> LilyPartConverter<'a> {
+impl LilyPartConverter {
     /// Creates a converter with fresh timing/dynamic state.
-    pub fn new(lily_part: &'a LilyPart, timing_helper: &'a mut TimingHelper) -> Self {
+    pub fn new(lily_part: &LilyPart, time_signature_changes: &TimeSignatureChanges) -> Self {
         let dynamic_helper = DynamicBuilder::build(lily_part);
-        timing_helper.reset();
+
         Self {
-            lily_part,
-            timing_helper,
+            timed_notes: NoteTimer::get_notes(lily_part, time_signature_changes),
             dynamic_helper,
             notes: Vec::new(),
             articulation: Articulation::Staccato,
@@ -168,16 +167,14 @@ impl<'a> LilyPartConverter<'a> {
     /// Applies rest timing progression.
     fn process_rest(&mut self, rest: &Rest) {
         self.dynamic_helper.next_rest(rest);
-        self.timing_helper.next_rest(rest);
     }
 
     /// Converts one LilyPond note event.
-    fn process_note(&mut self, note: &ast::Note) {
+    fn process_note(&mut self, note: &ast::Note, timing_info: &NoteTimingInfo) {
         if !note.articulation.is_none() {
             self.articulation = note.articulation;
         }
 
-        let timing_info = self.timing_helper.next_note(note);
         let volume = self.dynamic_helper.next_note(note, &timing_info);
         let (mut pluck_technique, finger_technique) = self.current_technique();
 
@@ -206,6 +203,7 @@ impl<'a> LilyPartConverter<'a> {
                 start: timing_info.note_stamp,
                 pluck_technique,
                 finger_technique,
+                bar_number: timing_info.bar_number,
             });
         }
 
@@ -214,22 +212,19 @@ impl<'a> LilyPartConverter<'a> {
 
     /// Converts all note-like events in the part.
     pub fn convert(mut self) -> MachineScorePart {
-        for event in &self.lily_part.events {
-            match event {
-                Event::Note(note) => {
-                    self.process_note(note);
+        let timed_notes = mem::take(&mut self.timed_notes);
+        for timing_info in timed_notes {
+            match &timing_info.note_or_rest {
+                NoteOrRest::Note(note) => {
+                    self.process_note(&note, &timing_info);
                 }
-                Event::Rest(rest) => {
-                    self.process_rest(rest);
+                NoteOrRest::Rest(rest) => {
+                    self.process_rest(&rest);
                 }
-                _ => {}
             }
         }
 
-        MachineScorePart {
-            name: self.lily_part.name.clone(),
-            notes: self.notes,
-        }
+        MachineScorePart { notes: self.notes }
     }
 }
 
@@ -242,23 +237,27 @@ impl MachineScore {
             .and_then(|header| header.title.clone())
             .unwrap_or_default();
 
-        let mut timing_helper = TimingHelper::from_score(&score);
+        let (time_signature_changes, tempo_changes) = EventTimer::extract_time_signature_and_tempo_changes(&score);
         let parts = score
             .parts
-            .map(|p| LilyPartConverter::new(&p, &mut timing_helper).convert());
+            .map(|p| LilyPartConverter::new(&p, &time_signature_changes).convert());
 
         Self {
             title: score_title,
             parts,
-            tempo_changes: timing_helper.get_tempo_changes(),
+            tempo_changes,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::machine_score::event_timer::Fraction;
+
     use super::*;
-    use lilyparse::syntax::ast::{Accidental, Crescendo, Dynamic, Header, Note as LilyNote, NoteDuration, PitchClass};
+    use lilyparse::syntax::ast::{
+        Accidental, Crescendo, Dynamic, Event, Header, Note as LilyNote, NoteDuration, PitchClass,
+    };
 
     fn lily_note(
         class: PitchClass,
@@ -342,7 +341,6 @@ mod tests {
                 Some(NoteDuration {
                     ratio: 4,
                     augmentation: 0,
-                    tuplet: None,
                 }),
                 Some(Dynamic::MF),
                 Articulation::Tenuto,
@@ -352,7 +350,6 @@ mod tests {
                 Some(NoteDuration {
                     ratio: 4,
                     augmentation: 0,
-                    tuplet: None,
                 }),
                 Some(Dynamic::P),
             )),
@@ -363,22 +360,16 @@ mod tests {
 
         assert_eq!(machine_score.title, "Study");
         assert_eq!(machine_score.parts[0].notes.len(), 2);
-        assert_eq!(machine_score.parts[0].notes[0].start, timing::Fraction::new(0u32, 1u32));
-        assert_eq!(
-            machine_score.parts[0].notes[0].length,
-            timing::Fraction::new(1u32, 4u32)
-        );
+        assert_eq!(machine_score.parts[0].notes[0].start, Fraction::new(0u32, 1u32));
+        assert_eq!(machine_score.parts[0].notes[0].length, Fraction::new(1u32, 4u32));
         assert_eq!(machine_score.parts[0].notes[0].pitch, MidiPitch { pitch: 48 });
         // MF base is 80, boosted by +10 for the primary beat stress on bar 1 beat 1.
         assert_eq!(machine_score.parts[0].notes[0].volume, MidiVolume { volume: 90 });
         assert_eq!(machine_score.parts[0].notes[0].pluck_technique, PluckTechnique::Soft);
         assert_eq!(machine_score.parts[0].notes[0].finger_technique, FingerTechnique::Quiet);
 
-        assert_eq!(machine_score.parts[0].notes[1].start, timing::Fraction::new(1u32, 2u32));
-        assert_eq!(
-            machine_score.parts[0].notes[1].length,
-            timing::Fraction::new(1u32, 4u32)
-        );
+        assert_eq!(machine_score.parts[0].notes[1].start, Fraction::new(1u32, 2u32));
+        assert_eq!(machine_score.parts[0].notes[1].length, Fraction::new(1u32, 4u32));
         assert_eq!(machine_score.parts[0].notes[1].pitch, MidiPitch { pitch: 50 });
         assert_eq!(machine_score.parts[0].notes[1].volume, MidiVolume { volume: 48 });
         assert_eq!(machine_score.parts[0].notes[1].pluck_technique, PluckTechnique::Hard);
@@ -390,7 +381,6 @@ mod tests {
         let quarter = Some(NoteDuration {
             ratio: 4,
             augmentation: 0,
-            tuplet: None,
         });
         let score = LilyScore {
             header: None,
@@ -427,7 +417,7 @@ mod tests {
 
         let machine_score = MachineScore::from_lilyscore(score);
 
-        assert_eq!(machine_score.parts[0].notes[0].start, timing::Fraction::new(0u32, 1u32));
-        assert_eq!(machine_score.parts[1].notes[0].start, timing::Fraction::new(0u32, 1u32));
+        assert_eq!(machine_score.parts[0].notes[0].start, Fraction::new(0u32, 1u32));
+        assert_eq!(machine_score.parts[1].notes[0].start, Fraction::new(0u32, 1u32));
     }
 }
