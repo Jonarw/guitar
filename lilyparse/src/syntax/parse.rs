@@ -65,7 +65,7 @@ fn tremolo(input: &mut &str) -> Result<Tremolo> {
 }
 
 fn slur(input: &mut &str) -> Result<Slur> {
-    preceded('\\', alt(('('.value(Slur::Start), ')'.value(Slur::End))))
+    preceded(opt('\\'), alt(('('.value(Slur::Start), ')'.value(Slur::End))))
         .context(Label("Slur"))
         .parse_next(input)
 }

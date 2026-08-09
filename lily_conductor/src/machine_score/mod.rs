@@ -1,6 +1,6 @@
 use std::panic;
 
-use lilyparse::syntax::ast::{self, Articulation, Event, LilyPart, LilyScore, Rest, Tempo};
+use lilyparse::syntax::ast::{self, Articulation, Event, LilyPart, LilyScore, Rest, Slur, Tempo};
 use timing::TimingHelper;
 
 use crate::machine_score::{
@@ -96,6 +96,7 @@ struct LilyPartConverter<'a> {
     notes: Vec<Note>,
     articulation: Articulation,
     next_note_tied: bool,
+    slur_in_progress: bool,
 }
 
 impl<'a> LilyPartConverter<'a> {
@@ -110,6 +111,7 @@ impl<'a> LilyPartConverter<'a> {
             notes: Vec::new(),
             articulation: Articulation::Staccato,
             next_note_tied: false,
+            slur_in_progress: false,
         }
     }
 
@@ -177,7 +179,18 @@ impl<'a> LilyPartConverter<'a> {
 
         let timing_info = self.timing_helper.next_note(note);
         let volume = self.dynamic_helper.next_note(note, &timing_info);
-        let (pluck_technique, finger_technique) = self.current_technique();
+        let (mut pluck_technique, finger_technique) = self.current_technique();
+
+        if self.slur_in_progress {
+            pluck_technique = PluckTechnique::None;
+        }
+
+        if let Some(slur) = note.slur {
+            match slur {
+                Slur::Start => self.slur_in_progress = true,
+                Slur::End => self.slur_in_progress = false,
+            }
+        }
 
         if self.next_note_tied {
             let last_note = self
@@ -356,7 +369,8 @@ mod tests {
             timing::Fraction::new(1u32, 4u32)
         );
         assert_eq!(machine_score.parts[0].notes[0].pitch, MidiPitch { pitch: 48 });
-        assert_eq!(machine_score.parts[0].notes[0].volume, MidiVolume { volume: 80 });
+        // MF base is 80, boosted by +10 for the primary beat stress on bar 1 beat 1.
+        assert_eq!(machine_score.parts[0].notes[0].volume, MidiVolume { volume: 90 });
         assert_eq!(machine_score.parts[0].notes[0].pluck_technique, PluckTechnique::Soft);
         assert_eq!(machine_score.parts[0].notes[0].finger_technique, FingerTechnique::Quiet);
 

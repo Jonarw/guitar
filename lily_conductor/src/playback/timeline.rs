@@ -3,7 +3,7 @@ use lilyparse::syntax::ast::Tempo;
 use protocol::{Fret, GuitarString, Message};
 
 use crate::machine_score::timing::Notes;
-use crate::machine_score::{FingerTechnique, MachineScore, Note};
+use crate::machine_score::{FingerTechnique, MachineScore, Note, PluckTechnique};
 use crate::playback::string_volume::StringVolumeTable;
 
 /// Guitar string configuration: (string enum, open-string MIDI pitch, max controllable frets).
@@ -26,7 +26,6 @@ const STRING_CONFIGS: [(GuitarString, u8, u8); 6] = [
 const FRET_QUIET_PREP_MS: u64 = 20;
 /// Delay between issuing `FretFast` and the subsequent `Pluck`.
 const FRET_FAST_PREP_MS: u64 = 20;
-const UNFRET_PREP_MS: u64 = 50;
 /// How early `PluckVolume` is sent before the `Pluck` it applies to.
 /// If the gap since the previous pluck is smaller than this, the command is placed
 /// at the midpoint between the two plucks instead.
@@ -38,15 +37,10 @@ const DAMPEN_SETTLE_MS: u64 = 500;
 /// Gives the hardware time to initialise after `Reset` + `PluckEnable`.
 const INIT_DELAY_MS: u64 = 1000;
 const SCORE_END_DELAY_MS: u64 = 500;
-const UNFRET_QUIET_PREP_MS: u64 = 75;
-const UNFRET_QUIET_DURATION_MS: u64 = 150;
+const UNFRET_QUIET_PREP_MS: u64 = 200;
+const UNFRET_QUIET_DURATION_MS: u64 = 550;
 const UNFRET_FAST_DURATION_MS: u64 = 10;
 const FRET_TO_DAMPEN_PREP_MS: u64 = 10;
-
-/// Fret used to mute an open string via `Dampen`
-/// Fret12 seems like the obvious choice, as it is in the middle and has good damping effect.
-/// However, Fret12 does a bad job of damping even harmonics, so we use Fret11.
-const OPEN_STRING_DAMPEN_FRET: Fret = Fret::Fret11;
 
 /// A protocol message paired with the wall-clock offset (from playback start) at which it
 /// should be transmitted.
@@ -174,14 +168,14 @@ impl CommandTimeline {
     /// 1. `FretQuiet` / `FretFast` at `start_ms − fret_prep` (skipped for open strings)
     /// 2. `PluckVolume` shortly before `Pluck` (only when volume changes)
     /// 3. `Pluck` at `start_ms`
-    /// 4. If the *next* note on this string starts immediately:
-    ///    - No `Dampen`
-    ///    - `Unfret` only if the current fret would interfere with the next note
-    ///      (i.e. next note is open, or next fret has a lower ordinal)
-    /// 5. Otherwise (gap before next note, or last note):
-    ///    - `Dampen` at `end_ms`; for open strings, `OPEN_STRING_DAMPEN_FRET` is used
-    ///    - `Unfret` at `end_ms + DAMPEN_SETTLE_MS`, but brought forward to just before the
-    ///      next note's fret command whenever the next fret has a lower ordinal
+    /// 4. End-of-note handling depends on what follows on this string:
+    ///    - Next note starts immediately on the same or a higher fret: nothing to do
+    ///      (every string/fret has its own finger, so the finger can stay pressed)
+    ///    - Next note is on a lower fret: `Dampen` and/or `Unfret`/`UnfretFast`, timed so
+    ///      the string is free before that note's fret command
+    ///    - Gap before the next note (or last note): `Dampen` at `end_ms` (fret 11 for open
+    ///      strings), `Unfret` once the string has settled (`DAMPEN_SETTLE_MS`), brought
+    ///      forward when needed to clear a lower fret in time
     pub fn from_machine_score(score: &MachineScore) -> Self {
         Self::from_machine_score_with_volume_table(score, &StringVolumeTable::default())
     }
@@ -216,8 +210,6 @@ impl CommandTimeline {
 
         for (part_idx, part) in score.parts.iter().enumerate() {
             Self::build_string_commands(&mut commands, part_idx, volume_table, &part.notes, tempo_changes);
-            // Self::post_process_commands(&mut string_commands);
-            // commands.append(&mut string_commands);
         }
 
         let score_end_ms = commands.iter().map(|c| c.time_ms).max().unwrap_or_default();
@@ -243,33 +235,6 @@ impl CommandTimeline {
         commands.sort_by_key(|c| c.time_ms);
 
         Self { commands }
-    }
-
-    fn post_process_commands(commands: &mut Vec<TimedCommand>) {
-        for i in 0..(commands.len() - 1) {
-            let current = &commands[i];
-
-            if let Message::Unfret(string, fret) = current.message {
-                let next_fret_command = commands.iter().skip(i).find(|c| {
-                    matches!(
-                        c.message,
-                        Message::FretFast(_, _)
-                            | Message::FretQuiet(_, _)
-                            | Message::Dampen(_, _)
-                            | Message::FretAdaptive(_, _)
-                    )
-                });
-
-                if let Some(next_fret_command) = next_fret_command
-                    && next_fret_command.time_ms - current.time_ms < UNFRET_QUIET_DURATION_MS
-                {
-                    commands[i] = TimedCommand {
-                        time_ms: current.time_ms + UNFRET_PREP_MS,
-                        message: Message::UnfretFast(string, fret),
-                    };
-                }
-            }
-        }
     }
 
     fn build_string_commands(
@@ -302,36 +267,39 @@ impl CommandTimeline {
                 });
             }
 
-            // --- Volume (only when it changes) ----------------------------------
-            let pluck_vol = volume_table.range_for(string_index, fret).map_midi_volume(note.volume);
-            if last_pluck_volume != Some(pluck_vol) {
-                // Issue PluckVolume PLUCK_VOLUME_PREP_MS before the pluck so the hardware
-                // has time to apply it. If the previous pluck was closer than that, place
-                // it at the midpoint between the two plucks.
-                let volume_ms = match prev_pluck_ms {
-                    Some(prev) => {
-                        let ideal = start_ms.saturating_sub(PLUCK_VOLUME_PREP_MS);
-                        if ideal > prev + PLUCK_VOLUME_PREP_MS / 2 {
-                            ideal
-                        } else {
-                            (prev + start_ms) / 2
+            if note.pluck_technique != PluckTechnique::None {
+                // --- Volume (only when it changes) ----------------------------------
+                let pluck_vol = volume_table.range_for(string_index, fret).map_midi_volume(note.volume);
+                if last_pluck_volume != Some(pluck_vol) {
+                    // Issue PluckVolume PLUCK_VOLUME_PREP_MS before the pluck so the hardware
+                    // has time to apply it. If the previous pluck was closer than that, place
+                    // it at the midpoint between the two plucks.
+                    let volume_ms = match prev_pluck_ms {
+                        Some(prev) => {
+                            let ideal = start_ms.saturating_sub(PLUCK_VOLUME_PREP_MS);
+                            if ideal > prev + PLUCK_VOLUME_PREP_MS / 2 {
+                                ideal
+                            } else {
+                                (prev + start_ms) / 2
+                            }
                         }
-                    }
-                    None => start_ms.saturating_sub(PLUCK_VOLUME_PREP_MS),
-                };
-                commands.push(TimedCommand {
-                    time_ms: volume_ms,
-                    message: Message::PluckVolume(guitar_string, pluck_vol.into()),
-                });
-                last_pluck_volume = Some(pluck_vol);
-            }
+                        None => start_ms.saturating_sub(PLUCK_VOLUME_PREP_MS),
+                    };
+                    commands.push(TimedCommand {
+                        time_ms: volume_ms,
+                        message: Message::PluckVolume(guitar_string, pluck_vol.into()),
+                    });
+                    last_pluck_volume = Some(pluck_vol);
+                }
 
-            // --- Pluck ----------------------------------------------------------
-            commands.push(TimedCommand {
-                time_ms: start_ms,
-                message: Message::Pluck(guitar_string),
-            });
-            prev_pluck_ms = Some(start_ms);
+                // --- Pluck ----------------------------------------------------------
+                commands.push(TimedCommand {
+                    time_ms: start_ms,
+                    message: Message::Pluck(guitar_string),
+                });
+
+                prev_pluck_ms = Some(start_ms);
+            }
 
             // --- End-of-note: dampen / unfret -----------------------------------
             if fret == Fret::NoFret {
@@ -413,7 +381,7 @@ impl CommandTimeline {
                             0..UNFRET_FAST_DURATION_MS => {
                                 // no or very little time until next note, unfret as fast as we can
                                 commands.push(TimedCommand {
-                                    time_ms: end_ms,
+                                    time_ms: end_ms - UNFRET_FAST_DURATION_MS,
                                     message: Message::UnfretFast(guitar_string, fret),
                                 });
                             }
@@ -497,10 +465,16 @@ mod tests {
     }
 
     #[test]
+    fn notes_to_ms_position_zero_is_init_delay() {
+        assert_eq!(notes_to_ms(Fraction::new(0u32, 1u32), &[]), INIT_DELAY_MS);
+    }
+
+    #[test]
     fn notes_to_ms_no_tempo_changes() {
-        // Default: quarter = 90 BPM → one quarter note = 60_000/90 = 666 ms
+        // Default: quarter = 90 BPM → one quarter note = 60_000/90 = 666 ms,
+        // plus the INIT_DELAY_MS offset that all wall-clock times carry.
         let ms = notes_to_ms(Fraction::new(1u32, 4u32), &[]);
-        assert_eq!(ms, 666);
+        assert_eq!(ms, INIT_DELAY_MS + 666);
     }
 
     #[test]
@@ -510,9 +484,9 @@ mod tests {
             (Fraction::new(1u32, 2u32), quarter_tempo(120)),
         ];
         // 0.5 whole at 60 BPM (4000 ms/whole) + 0.25 whole at 120 BPM (2000 ms/whole)
-        // = 2000 + 500 = 2500 ms
+        // = 2000 + 500 = 2500 ms, plus the INIT_DELAY_MS offset.
         let ms = notes_to_ms(Fraction::new(3u32, 4u32), &changes);
-        assert_eq!(ms, 2500);
+        assert_eq!(ms, INIT_DELAY_MS + 2500);
     }
 
     // --- Test helpers ---------------------------------------------------------
@@ -650,16 +624,20 @@ mod tests {
         };
         let ms = CommandTimeline::from_machine_score(&make_machine_score(vec![note], vec![]));
 
-        let vol_cmd = ms
-            .commands
-            .iter()
-            .find(|c| matches!(c.message, Message::PluckVolume(GuitarString::E, _)))
-            .expect("PluckVolume missing");
         let pluck_cmd = ms
             .commands
             .iter()
             .find(|c| matches!(c.message, Message::Pluck(GuitarString::E)))
             .expect("Pluck missing");
+        // The timeline also contains prologue/epilogue PluckVolume commands; take the one
+        // directly associated with this pluck, i.e. the last one issued before it.
+        let vol_cmd = ms
+            .commands
+            .iter()
+            .filter(|c| matches!(c.message, Message::PluckVolume(GuitarString::E, _)))
+            .filter(|c| c.time_ms <= pluck_cmd.time_ms)
+            .max_by_key(|c| c.time_ms)
+            .expect("PluckVolume missing");
 
         assert_eq!(pluck_cmd.time_ms - vol_cmd.time_ms, PLUCK_VOLUME_PREP_MS);
     }
@@ -707,6 +685,8 @@ mod tests {
         let vol_cmds: Vec<_> = ms
             .commands
             .iter()
+            // Skip prologue (time 0) and epilogue (after the last pluck) PluckVolumes.
+            .filter(|c| c.time_ms > 0 && c.time_ms <= pluck2_ms)
             .filter(|c| matches!(c.message, Message::PluckVolume(GuitarString::E, _)))
             .collect();
         // Two PluckVolume commands: one for note1 (at start - prep) and one for note2 (midpoint).
@@ -753,6 +733,8 @@ mod tests {
                 Message::PluckVolume(GuitarString::E, v) => Some(v.volume()),
                 _ => None,
             })
+            // Prologue and epilogue send min - 10; keep only the note volumes.
+            .filter(|v| *v >= volume_table.ranges[5][0].min)
             .collect();
 
         assert_eq!(volumes, vec![149, 220]);
@@ -800,25 +782,6 @@ mod tests {
     }
 
     #[test]
-    fn no_dampen_when_immediately_followed() {
-        use lilyparse::syntax::ast::{Articulation, PitchClass};
-        // Two consecutive quarter notes on E string, no gap.
-        let score = make_score_parts(vec![
-            lily_note(PitchClass::A, -1, 4, Articulation::Staccato), // Fret5
-            lily_note(PitchClass::B, -1, 4, Articulation::Staccato), // Fret7
-        ]);
-        let ms = CommandTimeline::from_machine_score(&crate::machine_score::MachineScore::from_lilyscore(score));
-
-        // No Dampen should appear for the first note (only a Dampen for the second)
-        let dampens: Vec<_> = ms
-            .commands
-            .iter()
-            .filter(|c| matches!(c.message, Message::Dampen(GuitarString::E, _)))
-            .collect();
-        assert_eq!(dampens.len(), 1, "expected exactly one Dampen (for the last note)");
-    }
-
-    #[test]
     fn unfret_brought_forward_when_next_fret_is_lower() {
         use lilyparse::syntax::ast::{
             Articulation, Event, Global, Header, LilyPart, LilyScore, NoteDuration, PitchClass, Rest,
@@ -835,8 +798,13 @@ mod tests {
             header: Some(Header { title: None }),
             global: Global::default(),
             parts: [
+                empty("stringOne"),
+                empty("stringTwo"),
+                empty("stringThree"),
+                empty("stringFour"),
+                empty("stringFive"),
                 LilyPart {
-                    name: "stringOne".to_owned(),
+                    name: "stringSix".to_owned(),
                     events: vec![
                         lily_note(PitchClass::B, -1, 4, Articulation::Staccato), // Fret7
                         Event::Rest(Rest {
@@ -855,11 +823,6 @@ mod tests {
                         lily_note(PitchClass::A, -1, 4, Articulation::Staccato), // Fret5
                     ],
                 },
-                empty("stringTwo"),
-                empty("stringThree"),
-                empty("stringFour"),
-                empty("stringFive"),
-                empty("stringSix"),
             ],
         };
 
@@ -898,6 +861,38 @@ mod tests {
     }
 
     #[test]
+    fn unfret_fast_when_lower_fret_follows_immediately() {
+        use lilyparse::syntax::ast::{Articulation, PitchClass};
+        // Two consecutive quarter notes on E string, no gap: B-1 (Fret7) then A-1 (Fret5).
+        // The next note is on a lower fret, so the finger on Fret7 must be released
+        // as fast as possible; there is no time to dampen first.
+        let score = make_score_parts(vec![
+            lily_note(PitchClass::B, -1, 4, Articulation::Staccato), // Fret7
+            lily_note(PitchClass::A, -1, 4, Articulation::Staccato), // Fret5
+        ]);
+        let ms = CommandTimeline::from_machine_score(&crate::machine_score::MachineScore::from_lilyscore(score));
+
+        let unfret_fast = ms
+            .commands
+            .iter()
+            .find(|c| matches!(c.message, Message::UnfretFast(GuitarString::E, Fret::Fret7)))
+            .expect("UnfretFast Fret7 missing");
+        let pluck = ms
+            .commands
+            .iter()
+            .find(|c| matches!(c.message, Message::Pluck(GuitarString::E)))
+            .expect("Pluck missing");
+        // Note 1 is a quarter at the default 90 BPM → ends 666 ms after the first pluck.
+        assert_eq!(unfret_fast.time_ms, pluck.time_ms + 666);
+        assert!(
+            !ms.commands
+                .iter()
+                .any(|c| matches!(c.message, Message::Dampen(GuitarString::E, Fret::Fret7))),
+            "no time to dampen before an immediately-following lower fret"
+        );
+    }
+
+    #[test]
     fn timeline_starts_with_reset_and_pluck_enables() {
         use lilyparse::syntax::ast::{Global, Header, LilyPart, LilyScore};
         fn empty(name: &str) -> LilyPart {
@@ -922,10 +917,15 @@ mod tests {
         };
         let ms = CommandTimeline::from_machine_score(&crate::machine_score::MachineScore::from_lilyscore(score));
 
+        // Prologue: Reset, then one baseline PluckVolume per string, then one
+        // PluckEnable per string. Epilogue: final Reset.
         assert!(matches!(ms.commands[0].message, Message::Reset));
         assert_eq!(ms.commands[0].time_ms, 0);
-        let enables: Vec<_> = ms.commands[1..=6].iter().collect();
+        let volumes: Vec<_> = ms.commands[1..=6].iter().collect();
+        assert!(volumes.iter().all(|c| matches!(c.message, Message::PluckVolume(_, _))));
+        let enables: Vec<_> = ms.commands[7..=12].iter().collect();
         assert!(enables.iter().all(|c| matches!(c.message, Message::PluckEnable(_))));
+        assert!(enables.iter().all(|c| c.time_ms == 300));
         assert!(matches!(ms.commands.last().unwrap().message, Message::Reset));
     }
 }

@@ -325,17 +325,17 @@ impl<'a> DynamicBuilder<'a> {
 impl DynamicHelper {
     /// Maps textual dynamics to a linear MIDI-volume scale.
     fn dynamic_to_fraction(dynamic: Dynamic) -> Fraction {
-        let value: u32 = match dynamic {
-            Dynamic::PPP => 1 * 128 / 8,
-            Dynamic::PP => 2 * 128 / 8,
-            Dynamic::P => 3 * 128 / 8,
-            Dynamic::MP => 4 * 128 / 8,
-            Dynamic::MF => 5 * 128 / 8,
-            Dynamic::F => 6 * 128 / 8,
-            Dynamic::FF => 7 * 128 / 8,
-            Dynamic::FFF => 127, // 8*128/8 = 128 would exceed MAX_VALUE
-        };
-        value.into()
+        match dynamic {
+            Dynamic::PPP => 0,
+            Dynamic::PP => 16,
+            Dynamic::P => 32,
+            Dynamic::MP => 48,
+            Dynamic::MF => 64,
+            Dynamic::F => 80,
+            Dynamic::FF => 96,
+            Dynamic::FFF => 127,
+        }
+        .into()
     }
 
     /// Converts fraction volume to a bounded MIDI value.
