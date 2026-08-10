@@ -183,6 +183,20 @@ impl CommandTimeline {
     /// Converts a [`MachineScore`] into a command timeline with per-string
     /// runtime-calibrated pluck-volume ranges.
     pub fn from_machine_score_with_volume_table(score: &MachineScore, volume_table: &StringVolumeTable) -> Self {
+        Self::from_machine_score_with_string_filter(score, volume_table, None)
+    }
+
+    /// Converts a [`MachineScore`] into a command timeline with per-string
+    /// runtime-calibrated pluck-volume ranges, emitting commands only for the given
+    /// strings. `None` enables all strings. Disabled strings receive no commands at
+    /// all (neither prologue/epilogue nor notes); the global `Reset` is always sent.
+    pub fn from_machine_score_with_string_filter(
+        score: &MachineScore,
+        volume_table: &StringVolumeTable,
+        enabled_strings: Option<&[GuitarString]>,
+    ) -> Self {
+        let enabled = |string: GuitarString| enabled_strings.is_none_or(|strings| strings.contains(&string));
+
         let mut commands: Vec<TimedCommand> = Vec::new();
 
         // --- Prologue -----------------------------------------------------------
@@ -191,6 +205,9 @@ impl CommandTimeline {
             message: Message::Reset,
         });
         for (i, (string, _, _)) in STRING_CONFIGS.iter().enumerate() {
+            if !enabled(*string) {
+                continue;
+            }
             commands.push(TimedCommand {
                 time_ms: 0,
                 message: Message::PluckVolume(
@@ -209,6 +226,9 @@ impl CommandTimeline {
         let tempo_changes = &score.tempo_changes;
 
         for (part_idx, part) in score.parts.iter().enumerate() {
+            if !enabled(STRING_CONFIGS[part_idx].0) {
+                continue;
+            }
             Self::build_string_commands(&mut commands, part_idx, volume_table, &part.notes, tempo_changes);
         }
 
@@ -217,6 +237,9 @@ impl CommandTimeline {
         // --- Epilogue -----------------------------------------------------------
 
         for (i, (string, _, _)) in STRING_CONFIGS.iter().enumerate() {
+            if !enabled(*string) {
+                continue;
+            }
             commands.push(TimedCommand {
                 time_ms: score_end_ms + SCORE_END_DELAY_MS,
                 message: Message::PluckVolume(
@@ -923,5 +946,97 @@ mod tests {
         assert!(enables.iter().all(|c| matches!(c.message, Message::PluckEnable(_))));
         assert!(enables.iter().all(|c| c.time_ms == 300));
         assert!(matches!(ms.commands.last().unwrap().message, Message::Reset));
+    }
+
+    #[test]
+    fn string_filter_omits_disabled_strings() {
+        use crate::machine_score::event_timer::Fraction;
+        use crate::machine_score::{
+            FingerTechnique, MachineScore, MachineScorePart, MidiPitch, MidiVolume, Note, PluckTechnique,
+        };
+
+        let note = || Note {
+            pitch: MidiPitch::new(45),
+            volume: MidiVolume::new(80),
+            length: Fraction::new(1u32, 4u32),
+            start: Fraction::new(0u32, 1u32),
+            pluck_technique: PluckTechnique::Hard,
+            finger_technique: FingerTechnique::Quiet,
+            bar_number: 0,
+        };
+        fn empty() -> MachineScorePart {
+            MachineScorePart { notes: vec![] }
+        }
+        // Notes on the A string (part 4) and the low-E string (part 5).
+        let score = MachineScore {
+            title: "Test".to_owned(),
+            parts: [
+                empty(),
+                empty(),
+                empty(),
+                empty(),
+                MachineScorePart { notes: vec![note()] },
+                MachineScorePart { notes: vec![note()] },
+            ],
+            tempo_changes: vec![],
+            time_signature_changes: vec![],
+            bar_count: 1,
+        };
+
+        let timeline = CommandTimeline::from_machine_score_with_string_filter(
+            &score,
+            &StringVolumeTable::default(),
+            Some(&[GuitarString::E]),
+        );
+
+        // Only the global Reset and commands for the low-E string remain.
+        assert!(
+            timeline
+                .commands
+                .iter()
+                .all(|c| c.message.get_string().is_none_or(|s| s == GuitarString::E))
+        );
+        assert!(
+            timeline
+                .commands
+                .iter()
+                .any(|c| matches!(c.message, Message::Pluck(GuitarString::E)))
+        );
+        assert!(
+            timeline
+                .commands
+                .iter()
+                .any(|c| matches!(c.message, Message::PluckEnable(GuitarString::E)))
+        );
+        assert!(timeline.commands.iter().any(|c| matches!(c.message, Message::Reset)));
+    }
+
+    #[test]
+    fn string_filter_with_none_enables_all_strings() {
+        use crate::machine_score::event_timer::Fraction;
+        use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
+
+        let note = Note {
+            pitch: MidiPitch::new(45),
+            volume: MidiVolume::new(80),
+            length: Fraction::new(1u32, 4u32),
+            start: Fraction::new(0u32, 1u32),
+            pluck_technique: PluckTechnique::Hard,
+            finger_technique: FingerTechnique::Quiet,
+            bar_number: 0,
+        };
+        let score = make_machine_score(vec![note], vec![]);
+
+        let timeline =
+            CommandTimeline::from_machine_score_with_string_filter(&score, &StringVolumeTable::default(), None);
+
+        assert_eq!(
+            timeline
+                .commands
+                .iter()
+                .filter(|c| matches!(c.message, Message::PluckEnable(_)))
+                .count(),
+            6
+        );
     }
 }

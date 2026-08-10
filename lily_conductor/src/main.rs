@@ -35,8 +35,8 @@ fn run() -> Result<(), String> {
     let bin_name = args.next().unwrap_or_else(|| "lily_conductor".to_owned());
     let args: Vec<String> = args.collect();
 
-    // Parse: <lily-file> [--calibration <csv-path>] [--export] [--start_bar <n>] [--end_bar <n>]
-    let (file_path, calibration_path, export, start_bar, end_bar) = parse_args(&bin_name, &args)?;
+    // Parse: <lily-file> [--calibration <csv-path>] [--export] [--start_bar <n>] [--end_bar <n>] [--string <strings>]
+    let (file_path, calibration_path, export, start_bar, end_bar, enabled_strings) = parse_args(&bin_name, &args)?;
 
     let file_contents = fs::read_to_string(file_path).map_err(|err| format!("Failed to read '{file_path}': {err}"))?;
 
@@ -51,7 +51,11 @@ fn run() -> Result<(), String> {
     };
     let volume_table = build_volume_table(calibration_path)?;
 
-    let timeline = CommandTimeline::from_machine_score_with_volume_table(&machine_score, &volume_table);
+    let timeline = CommandTimeline::from_machine_score_with_string_filter(
+        &machine_score,
+        &volume_table,
+        enabled_strings.as_deref(),
+    );
 
     if export {
         let export_path = export_path_for(file_path);
@@ -89,18 +93,57 @@ fn parse_bar_number(flag: &str, value: Option<&String>, usage: &str) -> Result<u
         .ok_or_else(|| format!("{flag} requires a positive integer bar number\n{usage}"))
 }
 
+/// Parses a `--string` value such as `EAD` into the corresponding strings.
+/// `e` denotes the high-E string, `E` the low-E string; `B`, `G`, `D`, `A` as expected.
+fn parse_strings(value: Option<&String>, usage: &str) -> Result<Vec<protocol::GuitarString>, String> {
+    use protocol::GuitarString;
+    let value = value.ok_or_else(|| format!("--string requires a string argument (e.g. --string EAD)\n{usage}"))?;
+    if value.is_empty() {
+        return Err(format!(
+            "--string requires a non-empty string argument (e.g. --string EAD)\n{usage}"
+        ));
+    }
+    value
+        .chars()
+        .map(|c| {
+            match c {
+                'e' => Ok(GuitarString::e),
+                'E' => Ok(GuitarString::E),
+                'A' => Ok(GuitarString::A),
+                'D' => Ok(GuitarString::D),
+                'G' => Ok(GuitarString::G),
+                'B' => Ok(GuitarString::B),
+                _ => Err(format!(
+                    "Invalid string '{c}' in --string argument; valid strings are e, B, G, D, A, E (from high to low)\n{usage}"
+                )),
+            }
+        })
+        .collect()
+}
+
 fn parse_args<'a>(
     bin_name: &str,
     args: &'a [String],
-) -> Result<(&'a str, Option<&'a str>, bool, Option<u32>, Option<u32>), String> {
+) -> Result<
+    (
+        &'a str,
+        Option<&'a str>,
+        bool,
+        Option<u32>,
+        Option<u32>,
+        Option<Vec<protocol::GuitarString>>,
+    ),
+    String,
+> {
     let usage = format!(
-        "Usage: {bin_name} <path-to-lilypond-file> [--calibration <csv-path>] [--export] [--start_bar <n>] [--end_bar <n>]"
+        "Usage: {bin_name} <path-to-lilypond-file> [--calibration <csv-path>] [--export] [--start_bar <n>] [--end_bar <n>] [--string <strings>]"
     );
     let mut lily_path: Option<&str> = None;
     let mut calibration_path: Option<&str> = None;
     let mut export = false;
     let mut start_bar: Option<u32> = None;
     let mut end_bar: Option<u32> = None;
+    let mut enabled_strings: Option<Vec<protocol::GuitarString>> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -123,6 +166,10 @@ fn parse_args<'a>(
                 i += 1;
                 end_bar = Some(parse_bar_number("--end_bar", args.get(i), &usage)?);
             }
+            "--string" => {
+                i += 1;
+                enabled_strings = Some(parse_strings(args.get(i), &usage)?);
+            }
             arg if !arg.starts_with('-') => {
                 if lily_path.is_some() {
                     return Err(format!("Unexpected argument '{arg}'\n{usage}"));
@@ -141,7 +188,7 @@ fn parse_args<'a>(
             "--end_bar ({end}) must not be smaller than --start_bar ({start})\n{usage}"
         ));
     }
-    Ok((lily_path, calibration_path, export, start_bar, end_bar))
+    Ok((lily_path, calibration_path, export, start_bar, end_bar, enabled_strings))
 }
 
 fn main() -> ExitCode {
