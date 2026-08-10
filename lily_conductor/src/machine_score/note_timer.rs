@@ -1,7 +1,7 @@
 use fraction::Zero;
 use lilyparse::syntax::ast::{Event, LilyPart, NoteOrRest, TimeSignature};
 
-use crate::machine_score::event_timer::{EventTimer, Fraction, Notes, TimedEvent};
+use crate::machine_score::event_timer::{EventTimer, Fraction, Notes, TimeSignatureChanges, TimedEvent};
 
 pub struct NoteTimer<'a> {
     lily_part: &'a LilyPart,
@@ -14,10 +14,32 @@ pub struct NoteTimer<'a> {
     timed_notes: Vec<NoteTimingInfo>,
 }
 
+/// Computes the length of one bar (in whole notes) for a time signature.
+fn time_signature_to_bar_length(time_signature: TimeSignature) -> Notes {
+    Notes::new(time_signature.numerator, time_signature.denominator)
+}
+
+/// Computes the absolute position (in whole notes from score start) of the beginning of
+/// the bar with the given 0-based index, honouring bar-aligned time signature changes.
+pub fn bar_start_position(bar_index: u32, time_signature_changes: &TimeSignatureChanges) -> Notes {
+    let mut position = Notes::zero();
+    let mut bar_length = time_signature_to_bar_length(TimeSignature::default());
+    let mut next_change = 0;
+    for _ in 0..bar_index {
+        while next_change < time_signature_changes.len() && time_signature_changes[next_change].0 <= position {
+            bar_length = time_signature_to_bar_length(time_signature_changes[next_change].1);
+            next_change += 1;
+        }
+        position += bar_length;
+    }
+    position
+}
+
 /// Timing metadata for one converted note.
 pub struct NoteTimingInfo {
     pub note_or_rest: NoteOrRest,
     pub time_signature: TimeSignature,
+    /// 0-based index of the bar in which the note starts.
     pub bar_number: u32,
     pub position_in_bar: Notes,
     pub note_stamp: Notes,
@@ -25,11 +47,6 @@ pub struct NoteTimingInfo {
 }
 
 impl<'a> NoteTimer<'a> {
-    /// Computes a full bar length from a time signature.
-    fn time_signature_to_bar_length(time_signature: TimeSignature) -> Fraction {
-        Fraction::new(time_signature.numerator, time_signature.denominator)
-    }
-
     fn new(part: &'a LilyPart, time_signature_changes: &'a Vec<(Notes, TimeSignature)>) -> Self {
         Self {
             lily_part: part,
@@ -37,7 +54,7 @@ impl<'a> NoteTimer<'a> {
             time_signature_index: 0,
             number_of_bars: Notes::zero(),
             position_in_bar: Notes::zero(),
-            bar_length: Self::time_signature_to_bar_length(TimeSignature::default()),
+            bar_length: time_signature_to_bar_length(TimeSignature::default()),
             time_signature: TimeSignature::default(),
             timed_notes: Vec::new(),
         }
@@ -51,7 +68,7 @@ impl<'a> NoteTimer<'a> {
                     panic!("Unaligned time signature change");
                 }
 
-                self.bar_length = Self::time_signature_to_bar_length(time_signature);
+                self.bar_length = time_signature_to_bar_length(time_signature);
                 self.time_signature = time_signature;
                 self.time_signature_index += 1;
                 continue;
@@ -78,9 +95,6 @@ impl<'a> NoteTimer<'a> {
         } in timed_events
         {
             self.apply_pending_time_signature_changes(note_stamp);
-            self.number_of_bars += duration / self.bar_length;
-            self.position_in_bar = (self.position_in_bar + duration) % self.bar_length;
-
             if let Some(note_or_rest) = Self::to_note_or_rest(event) {
                 self.timed_notes.push(NoteTimingInfo {
                     note_or_rest,
@@ -91,15 +105,19 @@ impl<'a> NoteTimer<'a> {
                     length: duration,
                 });
             }
+
+            self.number_of_bars += duration / self.bar_length;
+            self.position_in_bar = (self.position_in_bar + duration) % self.bar_length;
         }
     }
 
     pub fn get_notes(
         part: &'a LilyPart,
         time_signature_changes: &'a Vec<(Notes, TimeSignature)>,
-    ) -> Vec<NoteTimingInfo> {
+    ) -> (Vec<NoteTimingInfo>, u32) {
         let mut instance = Self::new(part, time_signature_changes);
         instance.process();
-        instance.timed_notes
+        let bar_count = *instance.number_of_bars.ceil().numer().unwrap_or(&0);
+        (instance.timed_notes, bar_count)
     }
 }

@@ -1,6 +1,7 @@
 use std::{mem, panic};
 
-use lilyparse::syntax::ast::{self, Articulation, LilyPart, LilyScore, NoteOrRest, Rest, Slur};
+use fraction::Zero;
+use lilyparse::syntax::ast::{self, Articulation, LilyPart, LilyScore, NoteOrRest, Rest, Slur, Tempo, TimeSignature};
 
 use crate::machine_score::{
     dynamic::{DynamicBuilder, DynamicHelper},
@@ -49,7 +50,7 @@ impl MidiVolume {
 }
 
 /// One machine-playable note instruction.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     pub pitch: MidiPitch,
     pub volume: MidiVolume,
@@ -57,6 +58,7 @@ pub struct Note {
     pub start: Notes,
     pub pluck_technique: PluckTechnique,
     pub finger_technique: FingerTechnique,
+    /// 0-based index of the bar in which the note starts.
     pub bar_number: u32,
 }
 
@@ -81,6 +83,9 @@ pub struct MachineScore {
     pub title: String,
     pub parts: [MachineScorePart; 6],
     pub tempo_changes: TempoChanges,
+    pub time_signature_changes: TimeSignatureChanges,
+    /// Total number of bars in the score (maximum across parts).
+    pub bar_count: u32,
 }
 
 /// Converted events for one part/string.
@@ -92,6 +97,7 @@ pub struct MachineScorePart {
 /// Stateful converter for one LilyPond part.
 struct LilyPartConverter {
     timed_notes: Vec<NoteTimingInfo>,
+    bar_count: u32,
     dynamic_helper: DynamicHelper,
     notes: Vec<Note>,
     articulation: Articulation,
@@ -103,9 +109,11 @@ impl LilyPartConverter {
     /// Creates a converter with fresh timing/dynamic state.
     pub fn new(lily_part: &LilyPart, time_signature_changes: &TimeSignatureChanges) -> Self {
         let dynamic_helper = DynamicBuilder::build(lily_part);
+        let (timed_notes, bar_count) = NoteTimer::get_notes(lily_part, time_signature_changes);
 
         Self {
-            timed_notes: NoteTimer::get_notes(lily_part, time_signature_changes),
+            timed_notes,
+            bar_count,
             dynamic_helper,
             notes: Vec::new(),
             articulation: Articulation::Staccato,
@@ -238,16 +246,113 @@ impl MachineScore {
             .unwrap_or_default();
 
         let (time_signature_changes, tempo_changes) = EventTimer::extract_time_signature_and_tempo_changes(&score);
-        let parts = score
-            .parts
-            .map(|p| LilyPartConverter::new(&p, &time_signature_changes).convert());
+        let mut bar_count = 0;
+        let parts = score.parts.map(|p| {
+            let converter = LilyPartConverter::new(&p, &time_signature_changes);
+            bar_count = bar_count.max(converter.bar_count);
+            converter.convert()
+        });
 
         Self {
             title: score_title,
             parts,
             tempo_changes,
+            time_signature_changes,
+            bar_count,
         }
     }
+
+    /// Returns a new score containing only the notes that start within the given
+    /// 1-indexed, inclusive bar range. Notes starting before `start_bar` are dropped;
+    /// notes starting within the range but extending past `end_bar` are kept in full.
+    ///
+    /// Note start positions, tempo changes and time signature changes are rebased so
+    /// that the first selected bar begins at position zero, i.e. playback of the
+    /// extracted score starts immediately (preserving any rests at its beginning).
+    pub fn extract_bar_range(&self, start_bar: u32, end_bar: Option<u32>) -> Result<Self, String> {
+        if start_bar == 0 {
+            return Err("start_bar must be at least 1".to_owned());
+        }
+        if let Some(end) = end_bar
+            && end < start_bar
+        {
+            return Err(format!(
+                "end_bar ({end}) must not be smaller than start_bar ({start_bar})"
+            ));
+        }
+        let start_idx = start_bar - 1;
+        if start_idx >= self.bar_count {
+            return Err(format!(
+                "start_bar {start_bar} is beyond the last bar of the score ({})",
+                self.bar_count
+            ));
+        }
+        let end_idx = end_bar.map(|e| (e - 1).min(self.bar_count.saturating_sub(1)));
+        let in_range = |bar: u32| bar >= start_idx && end_idx.is_none_or(|end| bar <= end);
+
+        let offset = note_timer::bar_start_position(start_idx, &self.time_signature_changes);
+
+        let parts = self.parts.each_ref().map(|part| MachineScorePart {
+            notes: part
+                .notes
+                .iter()
+                .filter(|note| in_range(note.bar_number))
+                .map(|note| Note {
+                    start: if note.start >= offset {
+                        note.start - offset
+                    } else {
+                        Notes::zero()
+                    },
+                    ..note.clone()
+                })
+                .collect(),
+        });
+
+        // Rebase tempo and time signature changes: drop changes before the selection,
+        // pin the values effective at the selection start to position zero.
+        let tempo_changes = rebase_timed_changes(&self.tempo_changes, offset, Tempo::default);
+        let time_signature_changes = rebase_timed_changes(&self.time_signature_changes, offset, TimeSignature::default);
+
+        let bar_count = match end_idx {
+            Some(end) => end + 1 - start_idx,
+            None => self.bar_count - start_idx,
+        };
+
+        Ok(Self {
+            title: self.title.clone(),
+            parts,
+            tempo_changes,
+            time_signature_changes,
+            bar_count,
+        })
+    }
+}
+
+/// Rebases a sorted list of position-tagged changes to a new origin: changes at or
+/// before `offset` collapse into a single entry at position zero holding the value
+/// effective at `offset`; later changes are shifted. Empty lists stay empty so that
+/// downstream default handling is preserved.
+fn rebase_timed_changes<T: Copy>(changes: &[(Notes, T)], offset: Notes, default: impl Fn() -> T) -> Vec<(Notes, T)> {
+    if changes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut effective = default();
+    for (position, value) in changes {
+        if *position > offset {
+            break;
+        }
+        effective = *value;
+    }
+
+    let mut rebased = vec![(Notes::zero(), effective)];
+    rebased.extend(
+        changes
+            .iter()
+            .filter(|(position, _)| *position > offset)
+            .map(|(position, value)| (*position - offset, *value)),
+    );
+    rebased
 }
 
 #[cfg(test)]
@@ -419,5 +524,179 @@ mod tests {
 
         assert_eq!(machine_score.parts[0].notes[0].start, Fraction::new(0u32, 1u32));
         assert_eq!(machine_score.parts[1].notes[0].start, Fraction::new(0u32, 1u32));
+    }
+
+    #[test]
+    fn bar_number_refers_to_the_bar_the_note_starts_in() {
+        // 4/4: a whole note fills bar 1 (0-indexed bar 0) exactly; the following
+        // quarter note starts the second bar.
+        let score = score_with_first_part(vec![
+            Event::Note(lily_note(
+                PitchClass::C,
+                0,
+                Some(NoteDuration {
+                    ratio: 1,
+                    augmentation: 0,
+                }),
+                Some(Dynamic::MF),
+                Articulation::none(),
+                None,
+            )),
+            Event::Note(lily_note(PitchClass::D, 0, None, None, Articulation::none(), None)),
+        ]);
+
+        let machine_score = MachineScore::from_lilyscore(score);
+
+        assert_eq!(machine_score.parts[0].notes[0].bar_number, 0);
+        assert_eq!(machine_score.parts[0].notes[1].bar_number, 1);
+        assert_eq!(machine_score.bar_count, 2);
+    }
+
+    fn machine_note(bar_number: u32, start: (u32, u32)) -> Note {
+        Note {
+            pitch: MidiPitch::new(60),
+            volume: MidiVolume::new(80),
+            length: Fraction::new(1u32, 4u32),
+            start: Fraction::new(start.0, start.1),
+            pluck_technique: PluckTechnique::Hard,
+            finger_technique: FingerTechnique::Quiet,
+            bar_number,
+        }
+    }
+
+    fn multi_bar_machine_score() -> MachineScore {
+        fn empty() -> MachineScorePart {
+            MachineScorePart { notes: vec![] }
+        }
+        // 4 bars of 4/4, one quarter note at the start of each bar.
+        let notes = (0..4).map(|bar| machine_note(bar, (bar, 1))).collect();
+        MachineScore {
+            title: "Test".to_owned(),
+            parts: [empty(), empty(), empty(), empty(), empty(), MachineScorePart { notes }],
+            tempo_changes: vec![
+                (
+                    Fraction::new(0u32, 1u32),
+                    Tempo {
+                        note_duration: NoteDuration {
+                            ratio: 4,
+                            augmentation: 0,
+                        },
+                        bpm: 60,
+                    },
+                ),
+                (
+                    Fraction::new(2u32, 1u32),
+                    Tempo {
+                        note_duration: NoteDuration {
+                            ratio: 4,
+                            augmentation: 0,
+                        },
+                        bpm: 120,
+                    },
+                ),
+            ],
+            time_signature_changes: vec![],
+            bar_count: 4,
+        }
+    }
+
+    #[test]
+    fn extract_bar_range_filters_and_rebases() {
+        let score = multi_bar_machine_score();
+        let extracted = score.extract_bar_range(2, Some(3)).unwrap();
+
+        let notes = &extracted.parts[5].notes;
+        assert_eq!(notes.len(), 2);
+        // Bar 2 (index 1) starts at whole-note position 1; starts are rebased to zero.
+        assert_eq!(notes[0].bar_number, 1);
+        assert_eq!(notes[0].start, Fraction::new(0u32, 1u32));
+        assert_eq!(notes[1].bar_number, 2);
+        assert_eq!(notes[1].start, Fraction::new(1u32, 1u32));
+        assert_eq!(extracted.bar_count, 2);
+
+        // Tempo at the selection start (bar 2) is 60 BPM, pinned at position zero;
+        // the 120 BPM change at position 2 is shifted to position 1.
+        assert_eq!(extracted.tempo_changes.len(), 2);
+        assert_eq!(
+            extracted.tempo_changes[0],
+            (
+                Fraction::new(0u32, 1u32),
+                Tempo {
+                    note_duration: NoteDuration {
+                        ratio: 4,
+                        augmentation: 0
+                    },
+                    bpm: 60,
+                }
+            )
+        );
+        assert_eq!(
+            extracted.tempo_changes[1],
+            (
+                Fraction::new(1u32, 1u32),
+                Tempo {
+                    note_duration: NoteDuration {
+                        ratio: 4,
+                        augmentation: 0
+                    },
+                    bpm: 120,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn extract_bar_range_open_end_plays_to_end_of_score() {
+        let score = multi_bar_machine_score();
+        let extracted = score.extract_bar_range(3, None).unwrap();
+
+        let notes = &extracted.parts[5].notes;
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].bar_number, 2);
+        assert_eq!(notes[0].start, Fraction::new(0u32, 1u32));
+        assert_eq!(notes[1].bar_number, 3);
+        assert_eq!(extracted.bar_count, 2);
+    }
+
+    #[test]
+    fn extract_bar_range_end_beyond_score_is_clamped() {
+        let score = multi_bar_machine_score();
+        let extracted = score.extract_bar_range(1, Some(100)).unwrap();
+        assert_eq!(extracted.parts[5].notes.len(), 4);
+        assert_eq!(extracted.bar_count, 4);
+    }
+
+    #[test]
+    fn extract_bar_range_rejects_invalid_ranges() {
+        let score = multi_bar_machine_score();
+        assert!(score.extract_bar_range(0, None).is_err());
+        assert!(score.extract_bar_range(3, Some(2)).is_err());
+        assert!(score.extract_bar_range(5, None).is_err());
+    }
+
+    #[test]
+    fn bar_start_position_honours_time_signature_changes() {
+        use crate::machine_score::note_timer::bar_start_position;
+        // Bar 0 is 2/4; bar 1 onwards switches to 4/4 at position 1/2.
+        let changes = vec![
+            (
+                Fraction::new(0u32, 1u32),
+                ast::TimeSignature {
+                    numerator: 2,
+                    denominator: 4,
+                },
+            ),
+            (
+                Fraction::new(1u32, 2u32),
+                ast::TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                },
+            ),
+        ];
+        assert_eq!(bar_start_position(0, &changes), Fraction::new(0u32, 1u32));
+        assert_eq!(bar_start_position(1, &changes), Fraction::new(1u32, 2u32));
+        assert_eq!(bar_start_position(2, &changes), Fraction::new(3u32, 2u32));
+        assert_eq!(bar_start_position(3, &changes), Fraction::new(5u32, 2u32));
     }
 }

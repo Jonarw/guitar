@@ -6,10 +6,14 @@
     "build": "Build lily_conductor",
     "program": "$ZED_WORKTREE_ROOT/lily_conductor/target/debug/lily_conductor",
     "args": [
-      "/home/jon/Documents/test2.ly",
+      "/home/jon/Documents/a.ly",
       "--calibration",
-      "calibration.csv",
-      "--export"
+      "calibration2.csv",
+      "--export",
+      "--start_bar",
+      "9",
+      "--end_bar",
+      "10"
     ],
     "cwd": "$ZED_WORKTREE_ROOT",
     "sourceLanguages": [

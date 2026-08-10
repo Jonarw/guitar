@@ -310,21 +310,30 @@ impl CommandTimeline {
                     let next_start_ms = notes_to_ms(next_note.start, tempo_changes);
                     let delta = next_start_ms - end_ms;
 
-                    const DAMPEN_THRESHOLD: u64 = FRET_TO_DAMPEN_PREP_MS + UNFRET_QUIET_PREP_MS;
+                    const DAMPEN_THRESHOLD1: u64 = FRET_QUIET_PREP_MS + FRET_TO_DAMPEN_PREP_MS;
+                    const DAMPEN_THRESHOLD2: u64 = DAMPEN_THRESHOLD1 + UNFRET_QUIET_DURATION_MS;
                     match delta {
-                        0..DAMPEN_THRESHOLD => {} // very little time -> do nothing
-                        _ => {
-                            // dampen the open string until we play another note or DAMPEN_SETTLE_MS
+                        0..DAMPEN_THRESHOLD1 => {} // very little time -> do nothing
+                        DAMPEN_THRESHOLD1..DAMPEN_THRESHOLD2 => {
                             commands.push(TimedCommand {
                                 time_ms: end_ms,
                                 message: Message::Dampen(guitar_string, DAMPEN_FRET),
                             });
 
-                            let dampen_end = (end_ms + DAMPEN_SETTLE_MS)
-                                .min(next_start_ms - UNFRET_QUIET_DURATION_MS - FRET_QUIET_PREP_MS - 1);
                             commands.push(TimedCommand {
-                                time_ms: dampen_end,
+                                time_ms: next_start_ms - FRET_QUIET_PREP_MS,
+                                message: Message::UnfretFast(guitar_string, DAMPEN_FRET),
+                            });
+                        }
+                        _ => {
+                            commands.push(TimedCommand {
+                                time_ms: end_ms,
                                 message: Message::Dampen(guitar_string, DAMPEN_FRET),
+                            });
+
+                            commands.push(TimedCommand {
+                                time_ms: next_start_ms - UNFRET_QUIET_DURATION_MS - FRET_QUIET_PREP_MS,
+                                message: Message::Unfret(guitar_string, DAMPEN_FRET),
                             });
                         }
                     }
@@ -551,6 +560,8 @@ mod tests {
             title: "Test".to_owned(),
             parts: [empty(), empty(), empty(), empty(), empty(), MachineScorePart { notes }],
             tempo_changes,
+            time_signature_changes: vec![],
+            bar_count: 0,
         }
     }
 

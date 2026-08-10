@@ -35,8 +35,8 @@ fn run() -> Result<(), String> {
     let bin_name = args.next().unwrap_or_else(|| "lily_conductor".to_owned());
     let args: Vec<String> = args.collect();
 
-    // Parse: <lily-file> [--calibration <csv-path>] [--export]
-    let (file_path, calibration_path, export) = parse_args(&bin_name, &args)?;
+    // Parse: <lily-file> [--calibration <csv-path>] [--export] [--start_bar <n>] [--end_bar <n>]
+    let (file_path, calibration_path, export, start_bar, end_bar) = parse_args(&bin_name, &args)?;
 
     let file_contents = fs::read_to_string(file_path).map_err(|err| format!("Failed to read '{file_path}': {err}"))?;
 
@@ -44,6 +44,11 @@ fn run() -> Result<(), String> {
         .map_err(|err| format!("Failed to parse LilyPond file '{file_path}':\n{err}"))?;
 
     let machine_score = MachineScore::from_lilyscore(lily_score);
+    let machine_score = if start_bar.is_some() || end_bar.is_some() {
+        machine_score.extract_bar_range(start_bar.unwrap_or(1), end_bar)?
+    } else {
+        machine_score
+    };
     let volume_table = build_volume_table(calibration_path)?;
 
     let timeline = CommandTimeline::from_machine_score_with_volume_table(&machine_score, &volume_table);
@@ -77,11 +82,25 @@ fn export_path_for(lily_path: &str) -> PathBuf {
     Path::new(lily_path).with_extension("txt")
 }
 
-fn parse_args<'a>(bin_name: &str, args: &'a [String]) -> Result<(&'a str, Option<&'a str>, bool), String> {
-    let usage = format!("Usage: {bin_name} <path-to-lilypond-file> [--calibration <csv-path>] [--export]");
+fn parse_bar_number(flag: &str, value: Option<&String>, usage: &str) -> Result<u32, String> {
+    value
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&n| n >= 1)
+        .ok_or_else(|| format!("{flag} requires a positive integer bar number\n{usage}"))
+}
+
+fn parse_args<'a>(
+    bin_name: &str,
+    args: &'a [String],
+) -> Result<(&'a str, Option<&'a str>, bool, Option<u32>, Option<u32>), String> {
+    let usage = format!(
+        "Usage: {bin_name} <path-to-lilypond-file> [--calibration <csv-path>] [--export] [--start_bar <n>] [--end_bar <n>]"
+    );
     let mut lily_path: Option<&str> = None;
     let mut calibration_path: Option<&str> = None;
     let mut export = false;
+    let mut start_bar: Option<u32> = None;
+    let mut end_bar: Option<u32> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -96,6 +115,14 @@ fn parse_args<'a>(bin_name: &str, args: &'a [String]) -> Result<(&'a str, Option
             "--export" => {
                 export = true;
             }
+            "--start_bar" => {
+                i += 1;
+                start_bar = Some(parse_bar_number("--start_bar", args.get(i), &usage)?);
+            }
+            "--end_bar" => {
+                i += 1;
+                end_bar = Some(parse_bar_number("--end_bar", args.get(i), &usage)?);
+            }
             arg if !arg.starts_with('-') => {
                 if lily_path.is_some() {
                     return Err(format!("Unexpected argument '{arg}'\n{usage}"));
@@ -107,7 +134,14 @@ fn parse_args<'a>(bin_name: &str, args: &'a [String]) -> Result<(&'a str, Option
         i += 1;
     }
     let lily_path = lily_path.ok_or_else(|| usage.clone())?;
-    Ok((lily_path, calibration_path, export))
+    if let (Some(start), Some(end)) = (start_bar, end_bar)
+        && end < start
+    {
+        return Err(format!(
+            "--end_bar ({end}) must not be smaller than --start_bar ({start})\n{usage}"
+        ));
+    }
+    Ok((lily_path, calibration_path, export, start_bar, end_bar))
 }
 
 fn main() -> ExitCode {
