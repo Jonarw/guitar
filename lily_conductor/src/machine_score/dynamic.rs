@@ -1,4 +1,4 @@
-use fraction::Zero;
+use fraction::{ConstOne, ConstZero, Ratio, Zero};
 use lilyparse::syntax::ast::{self, Articulation, Crescendo, Dynamic, Event, LilyPart, Rest, TimeSignature};
 
 use crate::machine_score::{
@@ -26,66 +26,77 @@ pub enum BeatStress {
 pub fn beat_stress(position_in_bar: Notes, time_signature: TimeSignature) -> BeatStress {
     // Quantise the position to a beat number (0-based) using the denominator.
     let beat_length = Fraction::new(1u32, u32::from(time_signature.denominator));
-    let beat = if beat_length == Fraction::zero() {
-        0u32
-    } else {
-        let b = position_in_bar / beat_length;
-        *b.trunc().numer().unwrap_or(&0)
-    };
+    let beat = position_in_bar / beat_length;
 
-    match (time_signature.numerator, time_signature.denominator) {
-        // Simple duple: primary on 1
-        (2, _) => match beat % 2 {
-            0 => BeatStress::Primary,
-            _ => BeatStress::Regular,
-        },
-        // Simple triple: primary on 1, rest regular
-        (3, _) => match beat {
-            0 => BeatStress::Primary,
-            _ => BeatStress::Regular,
-        },
-        // Simple quadruple: primary on 1, secondary on 3
-        (4, _) => match beat % 4 {
-            0 => BeatStress::Primary,
-            2 => BeatStress::Secondary,
-            _ => BeatStress::Regular,
-        },
-        // Compound duple (6/x): two compound beats; first is primary
-        (6, _) => match beat % 6 {
-            0 => BeatStress::Primary,
-            3 => BeatStress::Secondary,
-            _ => BeatStress::Regular,
-        },
-        // Compound triple (9/x): three compound beats; first is primary
-        (9, _) => match beat % 9 {
-            0 => BeatStress::Primary,
-            3 | 6 => BeatStress::Secondary,
-            _ => BeatStress::Regular,
-        },
-        // Compound quadruple (12/x): four compound beats; primary + secondary on 1 & 3
-        (12, _) => match beat % 12 {
-            0 => BeatStress::Primary,
-            3 | 9 => BeatStress::Secondary,
-            6 => BeatStress::Secondary,
-            _ => BeatStress::Regular,
-        },
-        // 5/x: primary on 1; secondary conventions vary, use beat 3 (common 3+2 grouping)
-        (5, _) => match beat % 5 {
-            0 => BeatStress::Primary,
-            3 => BeatStress::Secondary,
-            _ => BeatStress::Regular,
-        },
-        // 7/x: primary on 1; secondary on beats 2 and 5 (4+3 grouping)
-        (7, _) => match beat % 7 {
-            0 => BeatStress::Primary,
-            2 | 5 => BeatStress::Secondary,
-            _ => BeatStress::Regular,
-        },
-        // Fallback: first beat is primary, all others are regular
-        _ => match beat {
-            0 => BeatStress::Primary,
-            _ => BeatStress::Regular,
-        },
+    match time_signature.numerator {
+        2 | 3 => {
+            if beat == Fraction::from(0) {
+                BeatStress::Primary
+            } else {
+                BeatStress::Regular
+            }
+        }
+        4 => {
+            if beat == Fraction::from(0) {
+                BeatStress::Primary
+            } else if beat == Fraction::from(3) {
+                BeatStress::Secondary
+            } else {
+                BeatStress::Regular
+            }
+        }
+        5 => {
+            if beat == Fraction::from(0) {
+                BeatStress::Primary
+            } else if beat == Fraction::from(4) {
+                BeatStress::Secondary
+            } else {
+                BeatStress::Regular
+            }
+        }
+        6 => {
+            if beat == Fraction::from(0) {
+                BeatStress::Primary
+            } else if beat == Fraction::from(4) {
+                BeatStress::Secondary
+            } else {
+                BeatStress::Regular
+            }
+        }
+        9 => {
+            if beat == Fraction::from(0) {
+                BeatStress::Primary
+            } else if beat == Fraction::from(4) || beat == Fraction::from(7) {
+                BeatStress::Secondary
+            } else {
+                BeatStress::Regular
+            }
+        }
+        12 => {
+            if beat == Fraction::from(0) {
+                BeatStress::Primary
+            } else if beat == Fraction::from(4) || beat == Fraction::from(7) || beat == Fraction::from(10) {
+                BeatStress::Secondary
+            } else {
+                BeatStress::Regular
+            }
+        }
+        7 => {
+            if beat == Fraction::from(0) {
+                BeatStress::Primary
+            } else if beat == Fraction::from(2) || beat == Fraction::from(5) {
+                BeatStress::Secondary
+            } else {
+                BeatStress::Regular
+            }
+        }
+        _ => {
+            if beat == Fraction::from(0) {
+                BeatStress::Primary
+            } else {
+                BeatStress::Regular
+            }
+        }
     }
 }
 
@@ -273,6 +284,7 @@ impl<'a> DynamicBuilder<'a> {
             event,
             note_stamp,
             duration: _,
+            x_note: _,
         } = timed_event;
 
         match event {
@@ -488,6 +500,7 @@ mod tests {
             position_in_bar: position,
             note_stamp: position,
             length: Fraction::new(1u32, 4u32),
+            x_note: false,
         }
     }
 

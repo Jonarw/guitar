@@ -14,6 +14,7 @@ pub struct TimedEvent {
     pub event: Event,
     pub note_stamp: Notes,
     pub duration: Notes,
+    pub x_note: bool,
 }
 
 pub struct EventTimer {
@@ -21,6 +22,7 @@ pub struct EventTimer {
     current_duration: Notes,
     tuplet_modifier: Notes,
     events: Vec<TimedEvent>,
+    x_note: bool,
 }
 
 impl EventTimer {
@@ -55,6 +57,7 @@ impl EventTimer {
             current_duration: Self::note_duration_to_notes(NoteDuration::default()),
             tuplet_modifier: Notes::one(),
             events: Vec::new(),
+            x_note: false,
         }
     }
 
@@ -88,19 +91,32 @@ impl EventTimer {
             event: event.clone(),
             note_stamp: self.time,
             duration,
+            x_note: self.x_note,
         });
 
         self.time += duration;
 
-        if let Event::Tuplet(tuplet) = event {
-            let tuplet_ratio = Notes::new(tuplet.num, tuplet.den);
+        match event {
+            Event::Tuplet(tuplet) => {
+                let tuplet_ratio = Notes::new(tuplet.num, tuplet.den);
 
-            self.tuplet_modifier *= tuplet_ratio;
-            for event in &tuplet.events {
-                self.process_event(event);
+                self.tuplet_modifier *= tuplet_ratio;
+                for event in &tuplet.events {
+                    self.process_event(event);
+                }
+
+                self.tuplet_modifier /= tuplet_ratio;
             }
+            Event::Xnotes(xnotes) => {
+                let x_note_previous = self.x_note;
+                self.x_note = true;
+                for event in &xnotes.events {
+                    self.process_event(event);
+                }
 
-            self.tuplet_modifier /= tuplet_ratio;
+                self.x_note = x_note_previous;
+            }
+            _ => {}
         }
     }
 
@@ -120,6 +136,7 @@ impl EventTimer {
                 event,
                 note_stamp,
                 duration: _,
+                x_note: _,
             } in timed_events.iter()
             {
                 match event {

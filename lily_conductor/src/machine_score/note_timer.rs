@@ -44,6 +44,7 @@ pub struct NoteTimingInfo {
     pub position_in_bar: Notes,
     pub note_stamp: Notes,
     pub length: Notes,
+    pub x_note: bool,
 }
 
 impl<'a> NoteTimer<'a> {
@@ -92,6 +93,7 @@ impl<'a> NoteTimer<'a> {
             event,
             note_stamp,
             duration,
+            x_note,
         } in timed_events
         {
             self.apply_pending_time_signature_changes(note_stamp);
@@ -103,6 +105,7 @@ impl<'a> NoteTimer<'a> {
                     position_in_bar: self.position_in_bar,
                     note_stamp,
                     length: duration,
+                    x_note,
                 });
             }
 

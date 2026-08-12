@@ -9,8 +9,8 @@ use crate::playback::string_volume::StringVolumeTable;
 /// Guitar string configuration: (string enum, open-string MIDI pitch, max controllable frets).
 ///
 /// Standard tuning. The high-e string has 18 controlled frets; all others have 12.
-const STRING_CONFIGS: [(GuitarString, u8, u8); 6] = [
-    (GuitarString::e, 64, 18),
+pub const STRING_CONFIGS: [(GuitarString, u8, u8); 6] = [
+    (GuitarString::e, 64, 12),
     (GuitarString::B, 59, 12),
     (GuitarString::G, 55, 12),
     (GuitarString::D, 50, 12),
@@ -23,7 +23,7 @@ const STRING_CONFIGS: [(GuitarString, u8, u8); 6] = [
 // ---------------------------------------------------------------------------
 
 /// Delay between issuing `FretQuiet` and the subsequent `Pluck`.
-const FRET_QUIET_PREP_MS: u64 = 20;
+const FRET_QUIET_PREP_MS: u64 = 60;
 /// Delay between issuing `FretFast` and the subsequent `Pluck`.
 const FRET_FAST_PREP_MS: u64 = 20;
 /// How early `PluckVolume` is sent before the `Pluck` it applies to.
@@ -279,15 +279,36 @@ impl CommandTimeline {
             let prep = fret_prep_ms(note.finger_technique);
 
             // --- Fret command (before pluck) ------------------------------------
-            if fret != Fret::NoFret {
-                let fret_msg = match note.finger_technique {
-                    FingerTechnique::Quiet => Message::FretQuiet(guitar_string, fret),
-                    FingerTechnique::Loud => Message::FretFast(guitar_string, fret),
-                };
+            if note.x_note {
+                let x_fret = if fret == Fret::NoFret { Fret::Fret12 } else { fret };
                 commands.push(TimedCommand {
-                    time_ms: start_ms - prep,
-                    message: fret_msg,
+                    time_ms: start_ms - FRET_QUIET_PREP_MS,
+                    message: Message::Dampen(guitar_string, x_fret),
                 });
+            } else {
+                if fret != Fret::NoFret {
+                    let fret_msg = match note.finger_technique {
+                        FingerTechnique::Quiet => Message::FretQuiet(guitar_string, fret),
+                        FingerTechnique::Loud => Message::FretFast(guitar_string, fret),
+                    };
+
+                    commands.push(TimedCommand {
+                        time_ms: start_ms - prep,
+                        message: fret_msg,
+                    });
+
+                    if fret != Fret::Fret1 {
+                        commands.push(TimedCommand {
+                            time_ms: start_ms - FRET_QUIET_PREP_MS,
+                            message: Message::Dampen(guitar_string, Fret::Fret1),
+                        });
+                    }
+                } else {
+                    commands.push(TimedCommand {
+                        time_ms: start_ms - UNFRET_FAST_DURATION_MS,
+                        message: Message::UnfretFast(guitar_string, Fret::Fret1),
+                    });
+                }
             }
 
             if note.pluck_technique != PluckTechnique::None {
@@ -638,6 +659,7 @@ mod tests {
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
             bar_number: 0,
+            x_note: false,
         };
         let ms = CommandTimeline::from_machine_score(&make_machine_score(vec![note], vec![]));
 
@@ -682,6 +704,7 @@ mod tests {
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
             bar_number: 0,
+            x_note: false,
         };
         let note2 = Note {
             pitch: MidiPitch::new(45),
@@ -691,6 +714,7 @@ mod tests {
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
             bar_number: 0,
+            x_note: false,
         };
         let tempo_changes = vec![(Fraction::new(0u32, 1u32), fast_tempo)];
         let ms = CommandTimeline::from_machine_score(&make_machine_score(vec![note1, note2], tempo_changes));
@@ -730,6 +754,7 @@ mod tests {
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
             bar_number: 0,
+            x_note: false,
         };
         let note2 = Note {
             pitch: MidiPitch::new(45),
@@ -739,6 +764,7 @@ mod tests {
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
             bar_number: 0,
+            x_note: false,
         };
 
         let timeline = CommandTimeline::from_machine_score_with_volume_table(
@@ -963,6 +989,7 @@ mod tests {
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
             bar_number: 0,
+            x_note: false,
         };
         fn empty() -> MachineScorePart {
             MachineScorePart { notes: vec![] }
@@ -1024,6 +1051,7 @@ mod tests {
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
             bar_number: 0,
+            x_note: false,
         };
         let score = make_machine_score(vec![note], vec![]);
 

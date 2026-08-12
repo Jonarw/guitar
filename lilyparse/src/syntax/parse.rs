@@ -289,6 +289,18 @@ fn tuplet(input: &mut &str) -> Result<Tuplet> {
     .parse_next(input)
 }
 
+fn x_notes(input: &mut &str) -> Result<Xnotes> {
+    seq!(_: "\\xNote",
+        _: discard,
+        _: '{',
+        _: discard,
+        events,
+        _: discard,
+        _: '}')
+    .map(|(events,)| Xnotes { events })
+    .parse_next(input)
+}
+
 fn event(input: &mut &str) -> Result<Event> {
     alt((
         rest.map(Event::Rest),
@@ -296,6 +308,7 @@ fn event(input: &mut &str) -> Result<Event> {
         tempo.map(Event::Tempo),
         time.map(Event::TimeSignature),
         tuplet.map(Event::Tuplet),
+        x_notes.map(Event::Xnotes),
     ))
     .context(Label("Event"))
     .parse_next(input)

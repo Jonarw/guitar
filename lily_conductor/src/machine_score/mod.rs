@@ -3,10 +3,13 @@ use std::{mem, panic};
 use fraction::Zero;
 use lilyparse::syntax::ast::{self, Articulation, LilyPart, LilyScore, NoteOrRest, Rest, Slur, Tempo, TimeSignature};
 
-use crate::machine_score::{
-    dynamic::{DynamicBuilder, DynamicHelper},
-    event_timer::{EventTimer, Notes, TempoChanges, TimeSignatureChanges},
-    note_timer::{NoteTimer, NoteTimingInfo},
+use crate::{
+    machine_score::{
+        dynamic::{DynamicBuilder, DynamicHelper},
+        event_timer::{EventTimer, Notes, TempoChanges, TimeSignatureChanges},
+        note_timer::{NoteTimer, NoteTimingInfo},
+    },
+    playback::timeline::STRING_CONFIGS,
 };
 
 pub mod dynamic;
@@ -60,6 +63,7 @@ pub struct Note {
     pub finger_technique: FingerTechnique,
     /// 0-based index of the bar in which the note starts.
     pub bar_number: u32,
+    pub x_note: bool,
 }
 
 /// Plucking actuator strategy.
@@ -179,8 +183,9 @@ impl LilyPartConverter {
 
     /// Converts one LilyPond note event.
     fn process_note(&mut self, note: &ast::Note, timing_info: &NoteTimingInfo) {
-        if !note.articulation.is_none() {
-            self.articulation = note.articulation;
+        let articulation_except_accent = note.articulation.and(Articulation::Accent.not());
+        if !articulation_except_accent.is_none() {
+            self.articulation = articulation_except_accent;
         }
 
         let volume = self.dynamic_helper.next_note(note, &timing_info);
@@ -212,6 +217,7 @@ impl LilyPartConverter {
                 pluck_technique,
                 finger_technique,
                 bar_number: timing_info.bar_number,
+                x_note: timing_info.x_note,
             });
         }
 
@@ -259,6 +265,14 @@ impl MachineScore {
             tempo_changes,
             time_signature_changes,
             bar_count,
+        }
+    }
+
+    pub fn pre_process(&mut self) {
+        for note in self.parts[0].notes.iter_mut() {
+            if note.pitch.pitch > (STRING_CONFIGS[0].1 + STRING_CONFIGS[0].2) {
+                note.pitch = MidiPitch::new(note.pitch.pitch - 12)
+            }
         }
     }
 
@@ -561,6 +575,7 @@ mod tests {
             pluck_technique: PluckTechnique::Hard,
             finger_technique: FingerTechnique::Quiet,
             bar_number,
+            x_note: false,
         }
     }
 

@@ -13,7 +13,7 @@
       "--start_bar",
       "9",
       "--end_bar",
-      "10"
+      "9"
     ],
     "cwd": "$ZED_WORKTREE_ROOT",
     "sourceLanguages": [

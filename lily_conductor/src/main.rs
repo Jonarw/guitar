@@ -44,11 +44,13 @@ fn run() -> Result<(), String> {
         .map_err(|err| format!("Failed to parse LilyPond file '{file_path}':\n{err}"))?;
 
     let machine_score = MachineScore::from_lilyscore(lily_score);
-    let machine_score = if start_bar.is_some() || end_bar.is_some() {
+    let mut machine_score = if start_bar.is_some() || end_bar.is_some() {
         machine_score.extract_bar_range(start_bar.unwrap_or(1), end_bar)?
     } else {
         machine_score
     };
+
+    machine_score.pre_process();
     let volume_table = build_volume_table(calibration_path)?;
 
     let timeline = CommandTimeline::from_machine_score_with_string_filter(

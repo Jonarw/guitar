@@ -107,7 +107,7 @@ impl StringVolumeTable {
                 .parse()
                 .map_err(|_| format!("Calibration CSV line {}: invalid min_volume '{}'", line_no + 1, min_vol))?;
 
-            table.ranges[part_index][fret as usize] = StringVolumeRange { min, max: 0 };
+            table.ranges[part_index][fret as usize] = StringVolumeRange { min: min - 1, max: 0 };
         }
 
         for range in &mut table.ranges {
