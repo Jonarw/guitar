@@ -411,7 +411,10 @@ impl DynamicHelper {
         while self.crescendo_index < self.crescendo_blocks.len() {
             let block = &self.crescendo_blocks[self.crescendo_index];
             if timing.note_stamp >= block.end.time {
-                self.dynamic = block.end.dynamic;
+                if note.dynamic.is_none() {
+                    self.dynamic = block.end.dynamic;
+                }
+
                 self.crescendo_index += 1;
                 continue;
             }
