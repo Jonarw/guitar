@@ -1,5 +1,5 @@
 use clap::Parser;
-use protocol::{ConfigValue, Fret, GuitarString, Message, Percentage};
+use protocol::{ConfigValue, Fret, GuitarString, Message, Percentage, PluckTechnique};
 use std::io::{self, Write};
 use std::time::Duration as StdDuration;
 
@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("Connected to {}.", args.port);
     println!(
-        "Available commands: F[S][N], f[S][N], A[S][N], C[S][N], c[S][N], P[S], D[S][N], R[S][N], V[S][u8], E[S], I[S], O[fret].[id].[value]"
+        "Available commands: F[S][N], f[S][N], A[S][N], C[S][N], c[S][N], P[S], D[S][N], R[S][N], V[S][u8], E[S], I[S], S[S][u16], T[S][soft|hard], O[fret].[id].[value]"
     );
 
     loop {
@@ -112,8 +112,16 @@ fn parse_command(line: &str) -> Result<Message, String> {
             let (string, volume) = parse_string_and_volume(rest)?;
             Ok(Message::PluckVolume(string, volume.into()))
         }
+        'S' | 's' => {
+            let (string, speed) = parse_string_and_speed(rest)?;
+            Ok(Message::PluckSpeed(string, speed))
+        }
+        'T' | 't' => {
+            let (string, technique) = parse_string_and_technique(rest)?;
+            Ok(Message::PluckTechnique(string, technique))
+        }
         _ => Err(format!(
-            "unknown command '{}'; expected F, f, A, C, c, P, D, R, V, E, I or O",
+            "unknown command '{}'; expected F, f, A, C, c, P, D, R, V, E, I, S, T or O",
             command
         )),
     }
@@ -288,6 +296,39 @@ fn parse_string_and_volume(rest: &str) -> Result<(GuitarString, u8), String> {
     Ok((string, volume))
 }
 
+fn parse_string_and_speed(rest: &str) -> Result<(GuitarString, u16), String> {
+    let mut chars = rest.chars();
+    let string_char = chars
+        .next()
+        .ok_or_else(|| "missing string; expected one of E,A,D,G,B,e".to_string())?;
+    let string = parse_guitar_string(string_char)?;
+
+    let speed_str = chars.as_str();
+    if speed_str.is_empty() {
+        return Err("missing speed; expected 0-65535".to_string());
+    }
+
+    let speed = speed_str
+        .parse::<u16>()
+        .map_err(|_| "invalid speed; expected 0-65535".to_string())?;
+    Ok((string, speed))
+}
+
+fn parse_string_and_technique(rest: &str) -> Result<(GuitarString, PluckTechnique), String> {
+    let mut chars = rest.chars();
+    let string_char = chars
+        .next()
+        .ok_or_else(|| "missing string; expected one of E,A,D,G,B,e".to_string())?;
+    let string = parse_guitar_string(string_char)?;
+
+    let technique = match chars.as_str() {
+        "soft" => PluckTechnique::Soft,
+        "hard" => PluckTechnique::Hard,
+        other => return Err(format!("invalid technique '{}'; expected soft or hard", other)),
+    };
+    Ok((string, technique))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,7 +356,7 @@ mod tests {
         let dampen = parse_command("DB10").unwrap();
         assert_eq!(dampen, Message::Dampen(GuitarString::B, Fret::Fret10));
 
-        let unfret = parse_command("RE18").unwrap();
+        let unfret = parse_command("rE18").unwrap();
         assert_eq!(unfret, Message::Unfret(GuitarString::E, Fret::Fret18));
     }
 
@@ -323,6 +364,24 @@ mod tests {
     fn parses_volume_command() {
         let msg = parse_command("VD255").unwrap();
         assert_eq!(msg, Message::PluckVolume(GuitarString::D, 255u8.into()));
+    }
+
+    #[test]
+    fn parses_speed_command() {
+        let msg = parse_command("SE1000").unwrap();
+        assert_eq!(msg, Message::PluckSpeed(GuitarString::E, 1000));
+    }
+
+    #[test]
+    fn parses_technique_command() {
+        let soft = parse_command("TeSoft");
+        assert!(soft.is_err());
+
+        let soft = parse_command("Tesoft").unwrap();
+        assert_eq!(soft, Message::PluckTechnique(GuitarString::e, PluckTechnique::Soft));
+
+        let hard = parse_command("TAhard").unwrap();
+        assert_eq!(hard, Message::PluckTechnique(GuitarString::A, PluckTechnique::Hard));
     }
 
     #[test]

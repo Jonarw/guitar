@@ -6,13 +6,13 @@ pub mod hw;
 use crate::hw::{PWM_CLOCK, PluckStepper, Rs485, VolumePwm};
 use embassy_executor::Spawner;
 use embassy_rp::pwm::SetDutyCycle;
-use embassy_rp::{gpio, uart};
+use embassy_rp::uart;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::Read;
 use embedded_io_async::Write;
-use protocol::{GuitarString, Message, Parser, PluckVolume};
+use protocol::{GuitarString, Message, Parser, PluckTechnique, PluckVolume};
 use stepgen::Stepgen;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -97,9 +97,11 @@ async fn process_message(message: &Message, rs485: &mut Rs485) {
 
     match message {
         Message::PluckPresence(_) => send_confirm_presence(rs485).await,
-        Message::Pluck(string) | Message::PluckDisable(string) | Message::PluckEnable(string) => {
-            get_signals(*string).pluck_signal.signal(*message)
-        }
+        Message::Pluck(string)
+        | Message::PluckDisable(string)
+        | Message::PluckEnable(string)
+        | Message::PluckSpeed(string, _)
+        | Message::PluckTechnique(string, _) => get_signals(*string).pluck_signal.signal(*message),
         Message::Reset => {
             for signal in SIGNALS.iter() {
                 signal.pluck_signal.signal(*message);
@@ -131,8 +133,35 @@ async fn rs485_task(mut rs485: Rs485) -> ! {
 #[derive(Clone, Copy, defmt::Format)]
 enum PluckStepperState {
     Disabled,
-    EnabledLeft,
-    EnabledRight,
+    EnabledLeftSoft,
+    EnabledRightSoft,
+    EnabledLeftHard,
+    EnabledRightHard,
+}
+
+impl PluckStepperState {
+    fn get_abs_position(&self) -> i32 {
+        match self {
+            PluckStepperState::Disabled => 0,
+            PluckStepperState::EnabledLeftSoft => -PLUCK_STEPS / 2,
+            PluckStepperState::EnabledRightSoft => PLUCK_STEPS / 2,
+            PluckStepperState::EnabledLeftHard => -FULL_CIRCLE_STEPS / 2 + PLUCK_STEPS / 2,
+            PluckStepperState::EnabledRightHard => FULL_CIRCLE_STEPS / 2 - PLUCK_STEPS / 2,
+        }
+    }
+
+    pub fn get_delta(&self, other: PluckStepperState) -> i32 {
+        let mut ret = other.get_abs_position() - self.get_abs_position();
+        if ret > FULL_CIRCLE_STEPS / 2 {
+            ret -= FULL_CIRCLE_STEPS
+        }
+
+        if ret < -FULL_CIRCLE_STEPS / 2 {
+            ret += FULL_CIRCLE_STEPS;
+        }
+
+        ret
+    }
 }
 
 struct StepperStuff {
@@ -141,7 +170,8 @@ struct StepperStuff {
     state: PluckStepperState,
 }
 
-static PLUCK_STEPS: u32 = 200 * 8 / 3;
+static FULL_CIRCLE_STEPS: i32 = 200 * 8;
+static PLUCK_STEPS: i32 = FULL_CIRCLE_STEPS / 3;
 
 impl StepperStuff {
     pub fn new(hw: PluckStepper) -> Self {
@@ -158,33 +188,13 @@ impl StepperStuff {
         }
     }
 
-    fn set_next_direction(&mut self) {
-        let level = match (self.state, self.hw.reversed) {
-            (PluckStepperState::Disabled | PluckStepperState::EnabledLeft, true) => gpio::Level::High,
-            (PluckStepperState::Disabled | PluckStepperState::EnabledLeft, false) => gpio::Level::Low,
-            (PluckStepperState::EnabledRight, true) => gpio::Level::Low,
-            (PluckStepperState::EnabledRight, false) => gpio::Level::High,
-        };
-
-        self.hw.dir.set_level(level);
-
-        self.state = match self.state {
-            PluckStepperState::Disabled | PluckStepperState::EnabledLeft => PluckStepperState::EnabledRight,
-            PluckStepperState::EnabledRight => PluckStepperState::EnabledLeft,
-        }
-    }
-
     async fn rotate(&mut self, steps: u32) {
         self.stepgen
             .set_target_step(self.stepgen.current_step() + steps)
             .unwrap();
 
         let mut time = Instant::now();
-        loop {
-            let Some(delay) = self.stepgen.next() else {
-                break;
-            };
-
+        for delay in self.stepgen.by_ref() {
             self.hw.step.set_high();
 
             let delay_ns = (delay * 1000 + 128) >> 8;
@@ -201,20 +211,66 @@ impl StepperStuff {
 
     pub async fn enable(&mut self) {
         self.hw.en.set_low();
-        self.set_next_direction();
-        self.rotate(PLUCK_STEPS / 2).await;
+        self.move_to_state(PluckStepperState::EnabledLeftSoft).await;
     }
 
     pub async fn disable(&mut self) {
-        self.set_next_direction();
-        self.rotate(PLUCK_STEPS / 2).await;
+        self.move_to_state(PluckStepperState::Disabled).await;
         self.hw.en.set_high();
-        self.state = PluckStepperState::Disabled;
     }
 
     pub async fn pluck(&mut self) {
-        self.set_next_direction();
-        self.rotate(PLUCK_STEPS).await;
+        let new_state = match self.state {
+            PluckStepperState::Disabled => {
+                defmt::error!("Cannot pluck when disabled");
+                return;
+            }
+            PluckStepperState::EnabledLeftHard => PluckStepperState::EnabledRightHard,
+            PluckStepperState::EnabledRightHard => PluckStepperState::EnabledLeftHard,
+            PluckStepperState::EnabledLeftSoft => PluckStepperState::EnabledRightSoft,
+            PluckStepperState::EnabledRightSoft => PluckStepperState::EnabledLeftSoft,
+        };
+
+        self.move_to_state(new_state).await;
+    }
+
+    async fn move_to_state(&mut self, new_state: PluckStepperState) {
+        let delta = self.state.get_delta(new_state);
+        if (delta > 0) != self.hw.reversed {
+            self.hw.dir.set_high();
+        } else {
+            self.hw.dir.set_low();
+        }
+
+        self.rotate(delta.unsigned_abs()).await;
+        self.state = new_state;
+    }
+
+    pub async fn set_technique(&mut self, new_technique: PluckTechnique) {
+        let new_state = match (new_technique, self.state) {
+            (_, PluckStepperState::Disabled) => {
+                defmt::error!("Cannot set technique when disabled");
+                return;
+            }
+            (PluckTechnique::Soft, PluckStepperState::EnabledLeftHard | PluckStepperState::EnabledLeftSoft) => {
+                PluckStepperState::EnabledLeftSoft
+            }
+            (PluckTechnique::Soft, PluckStepperState::EnabledRightHard | PluckStepperState::EnabledRightSoft) => {
+                PluckStepperState::EnabledRightSoft
+            }
+            (PluckTechnique::Hard, PluckStepperState::EnabledLeftHard | PluckStepperState::EnabledLeftSoft) => {
+                PluckStepperState::EnabledLeftHard
+            }
+            (PluckTechnique::Hard, PluckStepperState::EnabledRightHard | PluckStepperState::EnabledRightSoft) => {
+                PluckStepperState::EnabledRightHard
+            }
+        };
+
+        self.move_to_state(new_state).await
+    }
+
+    pub fn set_speed(&mut self, speed: u16) {
+        self.stepgen.set_target_speed((speed as u32) << 8).unwrap();
     }
 }
 
@@ -225,17 +281,12 @@ async fn stepper_task(stepper: PluckStepper, signal: &'static PluckSignal) -> ! 
     loop {
         let action = signal.wait().await;
 
-        match (action, stepper.state) {
-            (Message::PluckEnable(_), PluckStepperState::Disabled) => stepper.enable().await,
-
-            (
-                Message::PluckDisable(_) | Message::Reset,
-                PluckStepperState::EnabledLeft | PluckStepperState::EnabledRight,
-            ) => stepper.disable().await,
-
-            (Message::Pluck(_), PluckStepperState::EnabledLeft | PluckStepperState::EnabledRight) => {
-                stepper.pluck().await
-            }
+        match action {
+            Message::PluckEnable(_) => stepper.enable().await,
+            Message::PluckDisable(_) => stepper.disable().await,
+            Message::Pluck(_) => stepper.pluck().await,
+            Message::PluckTechnique(_, t) => stepper.set_technique(t).await,
+            Message::PluckSpeed(_, s) => stepper.set_speed(s),
 
             _ => defmt::error!("Received invalid {} command while in state {}", action, stepper.state),
         }

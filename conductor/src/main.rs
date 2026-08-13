@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use protocol::{Fret, GuitarString, Message};
+use protocol::{Fret, GuitarString, Message, PluckTechnique};
 use std::env;
 use std::fs;
 use std::thread;
@@ -101,6 +101,8 @@ fn print_usage() {
     println!("Actions:");
     println!("  pluck <string>");
     println!("  pluck_volume <string> <0-255>");
+    println!("  pluck_speed <string> <0-65535>");
+    println!("  pluck_technique <string> <soft|hard>");
     println!("  pluck_enable <string>");
     println!("  pluck_disable <string>");
     println!("  fret_fast <string> <0-18>");
@@ -197,6 +199,18 @@ fn parse_action(action: &str, args: &[&str], line_no: usize) -> Result<Message> 
             let volume = parse_u8(args[1], line_no, "volume")?;
             Ok(Message::PluckVolume(string, volume.into()))
         }
+        "pluck_speed" => {
+            ensure_len(args, 2, line_no, action)?;
+            let string = parse_guitar_string(args[0], line_no)?;
+            let speed = parse_u16(args[1], line_no, "speed")?;
+            Ok(Message::PluckSpeed(string, speed))
+        }
+        "pluck_technique" => {
+            ensure_len(args, 2, line_no, action)?;
+            let string = parse_guitar_string(args[0], line_no)?;
+            let technique = parse_pluck_technique(args[1], line_no)?;
+            Ok(Message::PluckTechnique(string, technique))
+        }
         "pluck_enable" => {
             ensure_len(args, 1, line_no, action)?;
             Ok(Message::PluckEnable(parse_guitar_string(args[0], line_no)?))
@@ -246,7 +260,7 @@ fn parse_action(action: &str, args: &[&str], line_no: usize) -> Result<Message> 
             Ok(Message::Reset)
         }
         _ => bail!(
-            "line {}: unknown action '{}'; expected one of pluck, pluck_volume, pluck_enable, pluck_disable, fret_fast, fret_quiet, fret_adaptive, unfret, dampen",
+            "line {}: unknown action '{}'; expected one of pluck, pluck_volume, pluck_speed, pluck_technique, pluck_enable, pluck_disable, fret_fast, fret_quiet, fret_adaptive, unfret, dampen",
             line_no,
             action
         ),
@@ -317,6 +331,20 @@ fn parse_u8(value: &str, line_no: usize, field_name: &str) -> Result<u8> {
     value
         .parse::<u8>()
         .with_context(|| format!("line {}: invalid {} '{}', expected 0-255", line_no, field_name, value))
+}
+
+fn parse_u16(value: &str, line_no: usize, field_name: &str) -> Result<u16> {
+    value
+        .parse::<u16>()
+        .with_context(|| format!("line {}: invalid {} '{}', expected 0-65535", line_no, field_name, value))
+}
+
+fn parse_pluck_technique(value: &str, line_no: usize) -> Result<PluckTechnique> {
+    match value {
+        "soft" => Ok(PluckTechnique::Soft),
+        "hard" => Ok(PluckTechnique::Hard),
+        _ => bail!("line {}: invalid technique '{}'; expected soft or hard", line_no, value),
+    }
 }
 
 fn run_sequence(port: &mut dyn serialport::SerialPort, sequence: &Sequence) -> Result<()> {
