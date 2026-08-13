@@ -116,6 +116,13 @@ impl EventTimer {
 
                 self.x_note = x_note_previous;
             }
+            Event::Repeat(repeat) => {
+                for _ in 0..repeat.repeat_times {
+                    for event in &repeat.events {
+                        self.process_event(event);
+                    }
+                }
+            }
             _ => {}
         }
     }

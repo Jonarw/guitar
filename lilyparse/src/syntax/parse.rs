@@ -285,6 +285,7 @@ fn tuplet(input: &mut &str) -> Result<Tuplet> {
         events,
         _: discard,
         _: '}')
+    .context(Label("Tuplet"))
     .map(|(num, den, events)| Tuplet { num, den, events })
     .parse_next(input)
 }
@@ -297,7 +298,25 @@ fn x_notes(input: &mut &str) -> Result<Xnotes> {
         events,
         _: discard,
         _: '}')
+    .context(Label("X-Notes"))
     .map(|(events,)| Xnotes { events })
+    .parse_next(input)
+}
+
+fn repeat_unfold(input: &mut &str) -> Result<Repeat> {
+    seq!(_: "\\repeat",
+        _: discard,
+        _: "unfold",
+        _: discard,
+        digit1.parse_to(),
+        _: discard,
+        _: '{',
+        _: discard,
+        events,
+        _: discard,
+        _: '}')
+    .context(Label("Repeat"))
+    .map(|(repeat_times, events)| Repeat { repeat_times, events })
     .parse_next(input)
 }
 
@@ -309,6 +328,7 @@ fn event(input: &mut &str) -> Result<Event> {
         time.map(Event::TimeSignature),
         tuplet.map(Event::Tuplet),
         x_notes.map(Event::Xnotes),
+        repeat_unfold.map(Event::Repeat),
     ))
     .context(Label("Event"))
     .parse_next(input)

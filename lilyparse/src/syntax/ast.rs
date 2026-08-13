@@ -79,6 +79,7 @@ pub enum Event {
     Tempo(Tempo),
     Tuplet(Tuplet),
     Xnotes(Xnotes),
+    Repeat(Repeat),
 }
 
 /// Tuplet ratio (`num` in the time of `den`).
@@ -86,6 +87,13 @@ pub enum Event {
 pub struct Tuplet {
     pub num: u8,
     pub den: u8,
+    pub events: Vec<Event>,
+}
+
+/// Tuplet ratio (`num` in the time of `den`).
+#[derive(Debug, Clone)]
+pub struct Repeat {
+    pub repeat_times: u32,
     pub events: Vec<Event>,
 }
 
