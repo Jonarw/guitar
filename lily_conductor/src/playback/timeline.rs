@@ -1,10 +1,11 @@
 use fraction::Zero;
 use lilyparse::syntax::ast::Tempo;
+use protocol::PluckTechnique;
 use protocol::{Fret, GuitarString, Message};
 
 use crate::machine_score::event_timer::Notes;
-use crate::machine_score::{FingerTechnique, MachineScore, Note, PluckTechnique};
-use crate::playback::string_volume::StringVolumeTable;
+use crate::machine_score::{FingerTechnique, MachineScore, Note};
+use crate::playback::string_volume::{StringVolumeRange, StringVolumeTable};
 
 /// Guitar string configuration: (string enum, open-string MIDI pitch, max controllable frets).
 ///
@@ -41,6 +42,7 @@ const UNFRET_QUIET_PREP_MS: u64 = 200;
 const UNFRET_QUIET_DURATION_MS: u64 = 550;
 const UNFRET_FAST_DURATION_MS: u64 = 10;
 const FRET_TO_DAMPEN_PREP_MS: u64 = 10;
+const PLUCK_SWITCH_MS: u64 = 30;
 
 /// A protocol message paired with the wall-clock offset (from playback start) at which it
 /// should be transmitted.
@@ -55,6 +57,27 @@ pub struct TimedCommand {
 pub struct CommandTimeline {
     pub commands: Vec<TimedCommand>,
 }
+
+pub const PLUCK_SPEEDS: [(u16, u32); 16] = [
+    (5000, 110),
+    (6000, 93),
+    (7000, 82),
+    (8000, 73),
+    (9000, 67),
+    (10000, 62),
+    (11000, 58),
+    (12000, 55),
+    (13000, 53),
+    (14000, 51),
+    (15000, 49),
+    (16000, 48),
+    (17000, 47),
+    (18000, 46),
+    (19000, 46),
+    (20000, 45),
+];
+
+fn volume_and_
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -177,7 +200,10 @@ impl CommandTimeline {
     ///      strings), `Unfret` once the string has settled (`DAMPEN_SETTLE_MS`), brought
     ///      forward when needed to clear a lower fret in time
     pub fn from_machine_score(score: &MachineScore) -> Self {
-        Self::from_machine_score_with_volume_table(score, &StringVolumeTable::default())
+        Self::from_machine_score_with_volume_table(
+            score,
+            &StringVolumeTable::uniform(StringVolumeRange { min: 0, max: 255 }),
+        )
     }
 
     /// Converts a [`MachineScore`] into a command timeline with per-string
@@ -208,11 +234,16 @@ impl CommandTimeline {
             if !enabled(*string) {
                 continue;
             }
+
             commands.push(TimedCommand {
                 time_ms: 0,
                 message: Message::PluckVolume(
                     *string,
-                    volume_table.range_for(i, Fret::NoFret).min.saturating_sub(10).into(),
+                    volume_table
+                        .range_for(i, Fret::NoFret, PluckTechnique::Soft)
+                        .min
+                        .saturating_sub(10)
+                        .into(),
                 ),
             });
 
@@ -244,7 +275,11 @@ impl CommandTimeline {
                 time_ms: score_end_ms + SCORE_END_DELAY_MS,
                 message: Message::PluckVolume(
                     *string,
-                    volume_table.range_for(i, Fret::NoFret).min.saturating_sub(10).into(),
+                    volume_table
+                        .range_for(i, Fret::NoFret, PluckTechnique::Soft)
+                        .min
+                        .saturating_sub(10)
+                        .into(),
                 ),
             });
         }
@@ -269,8 +304,9 @@ impl CommandTimeline {
     ) {
         let (guitar_string, open_pitch, max_frets) = STRING_CONFIGS[string_index];
 
-        let mut last_pluck_volume: Option<u8> = None;
+        let mut prev_pluck_volume: Option<u8> = None;
         let mut prev_pluck_ms: Option<u64> = None;
+        let mut prev_pluck_technique = PluckTechnique::Soft;
 
         for (i, note) in notes.iter().enumerate() {
             let (start_ms, end_ms) = start_and_end_time(note, tempo_changes);
@@ -311,10 +347,22 @@ impl CommandTimeline {
                 }
             }
 
-            if note.pluck_technique != PluckTechnique::None {
+            if let Some(pluck_technique) = note.pluck_technique {
+                if prev_pluck_technique != pluck_technique {
+                    let pluck_switch_ms = (start_ms - PLUCK_SWITCH_MS).max(prev_pluck_ms.unwrap_or(0));
+                    commands.push(TimedCommand {
+                        time_ms: pluck_switch_ms,
+                        message: Message::PluckTechnique(guitar_string, pluck_technique),
+                    });
+
+                    prev_pluck_technique = pluck_technique;
+                }
+
                 // --- Volume (only when it changes) ----------------------------------
-                let pluck_vol = volume_table.range_for(string_index, fret).map_midi_volume(note.volume);
-                if last_pluck_volume != Some(pluck_vol) {
+                let pluck_vol = volume_table
+                    .range_for(string_index, fret, pluck_technique)
+                    .map_midi_volume(note.volume);
+                if prev_pluck_volume != Some(pluck_vol) {
                     // Issue PluckVolume PLUCK_VOLUME_PREP_MS before the pluck so the hardware
                     // has time to apply it. If the previous pluck was closer than that, place
                     // it at the midpoint between the two plucks.
@@ -333,7 +381,7 @@ impl CommandTimeline {
                         time_ms: volume_ms,
                         message: Message::PluckVolume(guitar_string, pluck_vol.into()),
                     });
-                    last_pluck_volume = Some(pluck_vol);
+                    prev_pluck_volume = Some(pluck_vol);
                 }
 
                 // --- Pluck ----------------------------------------------------------
@@ -739,12 +787,21 @@ mod tests {
         );
     }
 
+    fn range_example() -> StringVolumeRange {
+        StringVolumeRange {
+            min: 200,
+            max: 220,
+            min_hard: 203,
+            max_hard: 223,
+        }
+    }
+
     #[test]
     fn pluck_volume_uses_calibrated_string_range() {
         use crate::machine_score::event_timer::Fraction;
         use crate::machine_score::{FingerTechnique, MidiPitch, MidiVolume, Note, PluckTechnique};
 
-        let volume_table = StringVolumeTable::uniform(StringVolumeRange { min: 149, max: 220 });
+        let volume_table = StringVolumeTable::uniform(range_example());
 
         let note1 = Note {
             pitch: MidiPitch::new(45),
@@ -1012,7 +1069,7 @@ mod tests {
 
         let timeline = CommandTimeline::from_machine_score_with_string_filter(
             &score,
-            &StringVolumeTable::default(),
+            &StringVolumeTable::uniform(range_example()),
             Some(&[GuitarString::E]),
         );
 
@@ -1055,8 +1112,11 @@ mod tests {
         };
         let score = make_machine_score(vec![note], vec![]);
 
-        let timeline =
-            CommandTimeline::from_machine_score_with_string_filter(&score, &StringVolumeTable::default(), None);
+        let timeline = CommandTimeline::from_machine_score_with_string_filter(
+            &score,
+            &StringVolumeTable::uniform(range_example()),
+            None,
+        );
 
         assert_eq!(
             timeline

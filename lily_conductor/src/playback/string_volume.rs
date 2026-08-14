@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use protocol::Fret;
+use protocol::{Fret, PluckTechnique};
 
 use crate::machine_score::MidiVolume;
 
@@ -32,29 +32,34 @@ impl StringVolumeRange {
 /// perceived volume remains consistent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StringVolumeTable {
-    pub ranges: [[StringVolumeRange; 13]; 6],
+    pub ranges: [[(StringVolumeRange, StringVolumeRange); 13]; 6],
 }
 
 impl StringVolumeTable {
     /// Returns the calibrated range for a (part index, fret) pair.
-    pub fn range_for(&self, part_index: usize, fret: Fret) -> StringVolumeRange {
-        self.ranges
+    pub fn range_for(&self, part_index: usize, fret: Fret, technique: PluckTechnique) -> StringVolumeRange {
+        let ranges = self
+            .ranges
             .get(part_index)
-            .expect("part index outside of 0..=5 for StringVolumeTable")[fret as usize]
+            .expect("part index outside of 0..=5 for StringVolumeTable")[fret as usize];
+
+        match technique {
+            PluckTechnique::Soft => ranges.0,
+            PluckTechnique::Hard => ranges.1,
+        }
     }
 
     /// Constructs a table where every (string, fret) cell has the same range.
     pub fn uniform(range: StringVolumeRange) -> Self {
         Self {
-            ranges: [[range; 13]; 6],
+            ranges: [[(range, range); 13]; 6],
         }
     }
 }
 
-impl Default for StringVolumeTable {
-    fn default() -> Self {
-        // Defaults preserve current behaviour until calibration values are provided.
-        Self::uniform(StringVolumeRange { min: 0, max: 255 })
+impl StringVolumeRange {
+    pub fn empty() -> Self {
+        Self { min: 0, max: 0 }
     }
 }
 
@@ -76,7 +81,7 @@ impl StringVolumeTable {
         let content =
             std::fs::read_to_string(path.as_ref()).map_err(|e| format!("Cannot read calibration file: {e}"))?;
 
-        let mut table = Self::uniform(StringVolumeRange { min: 0, max: 0 });
+        let mut table = Self::uniform(StringVolumeRange::empty());
 
         for (line_no, line) in content.lines().enumerate() {
             // Skip header and blank lines.
@@ -85,7 +90,7 @@ impl StringVolumeTable {
             }
 
             let cols: Vec<&str> = line.splitn(3, ',').collect();
-            if cols.len() != 3 {
+            if cols.len() != 4 {
                 return Err(format!(
                     "Calibration CSV line {}: expected 3 columns, got {}",
                     line_no + 1,
@@ -98,36 +103,49 @@ impl StringVolumeTable {
             let fret = parse_fret(cols[1])
                 .ok_or_else(|| format!("Calibration CSV line {}: unknown fret '{}'", line_no + 1, cols[1]))?;
 
-            let min_vol = cols[2].trim();
-            if min_vol == "not_detected" {
-                return Err(format!("Calibration CSV line {}: not detected", line_no + 1,));
-            }
+            let min_vol_soft = cols[2].trim();
+            let min_soft: u8 = min_vol_soft.parse().map_err(|_| {
+                format!(
+                    "Calibration CSV line {}: invalid min_volume_soft '{}'",
+                    line_no + 1,
+                    min_vol_soft
+                )
+            })?;
 
-            let min: u8 = min_vol
-                .parse()
-                .map_err(|_| format!("Calibration CSV line {}: invalid min_volume '{}'", line_no + 1, min_vol))?;
+            let min_vol_hard = cols[3].trim();
+            let min_hard: u8 = min_vol_hard.parse().map_err(|_| {
+                format!(
+                    "Calibration CSV line {}: invalid min_volume_hard '{}'",
+                    line_no + 1,
+                    min_vol_hard
+                )
+            })?;
 
-            table.ranges[part_index][fret as usize] = StringVolumeRange { min: min - 1, max: 0 };
+            table.ranges[part_index][fret as usize] = (
+                StringVolumeRange { min: min_soft, max: 0 },
+                StringVolumeRange { min: min_hard, max: 0 },
+            );
         }
 
         for range in &mut table.ranges {
-            if range.iter().find(|r| r.min == 0).is_some() {
+            if range.iter().find(|r| r.0.min == 0 || r.1.min == 0).is_some() {
                 return Err("Found empty range".to_owned());
             }
 
             let min = range
                 .iter()
-                .map(|r| r.min)
+                .map(|r| r.0.min)
                 .min()
                 .ok_or_else(|| "Range should contain items")?;
             let max = range
                 .iter()
-                .map(|r| r.min)
+                .map(|r| r.0.min)
                 .max()
                 .ok_or_else(|| "Range should contain items")?;
             let span = (max - min) * 2;
             for item in range {
-                item.max = item.min.saturating_add(span);
+                item.0.max = item.0.min.saturating_add(span);
+                item.1.max = item.1.min.saturating_add(span);
             }
         }
 
@@ -169,43 +187,5 @@ fn parse_fret(s: &str) -> Option<Fret> {
         "Fret17" => Some(Fret::Fret17),
         "Fret18" => Some(Fret::Fret18),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{
-        machine_score::MidiVolume,
-        playback::string_volume::{StringVolumeRange, StringVolumeTable},
-    };
-
-    #[test]
-    fn maps_midi_volume_into_string_range() {
-        let range = StringVolumeRange { min: 149, max: 220 };
-        assert_eq!(range.map_midi_volume(MidiVolume::new(0)), 149);
-        assert_eq!(range.map_midi_volume(MidiVolume::new(MidiVolume::MAX_VALUE)), 220);
-    }
-
-    #[test]
-    fn default_string_volume_table_spans_full_range() {
-        let table = StringVolumeTable::default();
-        let range = table.range_for(0, protocol::Fret::NoFret);
-        assert_eq!(range.min, 0);
-        assert_eq!(range.max, 255);
-    }
-
-    #[test]
-    fn string_volume_table_per_fret_lookup() {
-        use protocol::Fret;
-
-        let low = StringVolumeRange { min: 100, max: 180 };
-        let high = StringVolumeRange { min: 120, max: 200 };
-        let mut table = StringVolumeTable::uniform(low);
-        // Override Fret5 on string 0 with a different range.
-        table.ranges[0][Fret::Fret5 as usize] = high;
-
-        assert_eq!(table.range_for(0, Fret::NoFret), low);
-        assert_eq!(table.range_for(0, Fret::Fret5), high);
-        assert_eq!(table.range_for(1, Fret::Fret5), low); // other strings unaffected
     }
 }

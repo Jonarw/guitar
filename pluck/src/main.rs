@@ -34,7 +34,7 @@ impl ChannelSignals {
 }
 
 static SIGNALS: [ChannelSignals; 3] = [ChannelSignals::new(), ChannelSignals::new(), ChannelSignals::new()];
-static VARIANT: Variant = Variant::Left;
+static VARIANT: Variant = Variant::Right;
 
 #[derive(Clone, Copy)]
 pub enum Variant {
@@ -168,24 +168,27 @@ struct StepperStuff {
     hw: PluckStepper,
     stepgen: Stepgen,
     state: PluckStepperState,
+    speed: u16,
 }
 
 static FULL_CIRCLE_STEPS: i32 = 200 * 8;
 static PLUCK_STEPS: i32 = FULL_CIRCLE_STEPS / 3;
 
 impl StepperStuff {
+    const MAX_SPEED: u16 = 20000;
     pub fn new(hw: PluckStepper) -> Self {
         const ACC: u32 = 1_000_000;
-        const SPEED: u32 = 20000;
         let mut stepgen = Stepgen::new(1_000_000);
         stepgen.set_acceleration(ACC << 8).unwrap();
-        stepgen.set_target_speed(SPEED << 8).unwrap();
-
-        Self {
+        let mut ret = Self {
             hw,
             stepgen,
             state: PluckStepperState::Disabled,
-        }
+            speed: 0,
+        };
+
+        ret.set_speed(Self::MAX_SPEED);
+        ret
     }
 
     async fn rotate(&mut self, steps: u32) {
@@ -266,11 +269,15 @@ impl StepperStuff {
             }
         };
 
-        self.move_to_state(new_state).await
+        let speed = self.speed;
+        self.set_speed(Self::MAX_SPEED);
+        self.move_to_state(new_state).await;
+        self.set_speed(speed);
     }
 
     pub fn set_speed(&mut self, speed: u16) {
         self.stepgen.set_target_speed((speed as u32) << 8).unwrap();
+        self.speed = speed;
     }
 }
 

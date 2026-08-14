@@ -2,6 +2,7 @@ use std::{mem, panic};
 
 use fraction::Zero;
 use lilyparse::syntax::ast::{self, Articulation, LilyPart, LilyScore, NoteOrRest, Rest, Slur, Tempo, TimeSignature};
+use protocol::PluckTechnique;
 
 use crate::{
     machine_score::{
@@ -59,19 +60,11 @@ pub struct Note {
     pub volume: MidiVolume,
     pub length: Notes,
     pub start: Notes,
-    pub pluck_technique: PluckTechnique,
+    pub pluck_technique: Option<PluckTechnique>,
     pub finger_technique: FingerTechnique,
     /// 0-based index of the bar in which the note starts.
     pub bar_number: u32,
     pub x_note: bool,
-}
-
-/// Plucking actuator strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PluckTechnique {
-    Soft,
-    Hard,
-    None,
 }
 
 /// Fretting pressure strategy.
@@ -127,17 +120,17 @@ impl LilyPartConverter {
     }
 
     /// Maps articulation marks to hardware techniques.
-    fn current_technique(&self) -> (PluckTechnique, FingerTechnique) {
+    fn current_technique(&self) -> (Option<PluckTechnique>, FingerTechnique) {
         if self.articulation.contains(Articulation::Portato) {
-            (PluckTechnique::Soft, FingerTechnique::Loud)
+            (Some(PluckTechnique::Soft), FingerTechnique::Loud)
         } else if self.articulation.contains(Articulation::Staccato) {
-            (PluckTechnique::Hard, FingerTechnique::Quiet)
+            (Some(PluckTechnique::Hard), FingerTechnique::Quiet)
         } else if self.articulation.contains(Articulation::Tenuto) {
-            (PluckTechnique::Soft, FingerTechnique::Quiet)
+            (Some(PluckTechnique::Soft), FingerTechnique::Quiet)
         } else if self.articulation.contains(Articulation::Staccatissimo) {
-            (PluckTechnique::Hard, FingerTechnique::Loud)
+            (Some(PluckTechnique::Hard), FingerTechnique::Loud)
         } else if self.articulation.contains(Articulation::Marcato) {
-            (PluckTechnique::None, FingerTechnique::Loud)
+            (None, FingerTechnique::Loud)
         } else {
             panic!("Articulation should never be none")
         }
@@ -192,7 +185,7 @@ impl LilyPartConverter {
         let (mut pluck_technique, finger_technique) = self.current_technique();
 
         if self.slur_in_progress {
-            pluck_technique = PluckTechnique::None;
+            pluck_technique = None;
         }
 
         if let Some(slur) = note.slur {
@@ -484,14 +477,20 @@ mod tests {
         assert_eq!(machine_score.parts[0].notes[0].pitch, MidiPitch { pitch: 48 });
         // MF base is 80, boosted by +10 for the primary beat stress on bar 1 beat 1.
         assert_eq!(machine_score.parts[0].notes[0].volume, MidiVolume { volume: 90 });
-        assert_eq!(machine_score.parts[0].notes[0].pluck_technique, PluckTechnique::Soft);
+        assert_eq!(
+            machine_score.parts[0].notes[0].pluck_technique,
+            Some(PluckTechnique::Soft)
+        );
         assert_eq!(machine_score.parts[0].notes[0].finger_technique, FingerTechnique::Quiet);
 
         assert_eq!(machine_score.parts[0].notes[1].start, Fraction::new(1u32, 2u32));
         assert_eq!(machine_score.parts[0].notes[1].length, Fraction::new(1u32, 4u32));
         assert_eq!(machine_score.parts[0].notes[1].pitch, MidiPitch { pitch: 50 });
         assert_eq!(machine_score.parts[0].notes[1].volume, MidiVolume { volume: 48 });
-        assert_eq!(machine_score.parts[0].notes[1].pluck_technique, PluckTechnique::Hard);
+        assert_eq!(
+            machine_score.parts[0].notes[1].pluck_technique,
+            Some(PluckTechnique::Hard)
+        );
         assert_eq!(machine_score.parts[0].notes[1].finger_technique, FingerTechnique::Quiet);
     }
 
@@ -572,7 +571,7 @@ mod tests {
             volume: MidiVolume::new(80),
             length: Fraction::new(1u32, 4u32),
             start: Fraction::new(start.0, start.1),
-            pluck_technique: PluckTechnique::Hard,
+            pluck_technique: Some(PluckTechnique::Hard),
             finger_technique: FingerTechnique::Quiet,
             bar_number,
             x_note: false,
