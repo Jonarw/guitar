@@ -2,8 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize, Default)]
 pub enum PluckTechnique {
+    #[default]
     Soft,
     Hard,
 }

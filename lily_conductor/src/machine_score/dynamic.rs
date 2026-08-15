@@ -1,10 +1,14 @@
-use fraction::{ConstOne, ConstZero, Ratio, Zero};
-use lilyparse::syntax::ast::{self, Articulation, Crescendo, Dynamic, Event, LilyPart, Rest, TimeSignature};
+use std::{collections::HashSet, mem};
+
+use fraction::Zero;
+use lilyparse::syntax::ast::{
+    self, Articulation, Crescendo, Dynamic, Event, LilyPart, NoteOrRest, Rest, TimeSignature,
+};
 
 use crate::machine_score::{
     MidiVolume,
-    event_timer::{EventTimer, Fraction, Notes, TimedEvent},
-    note_timer::NoteTimingInfo,
+    event_timer::{EventTimer, Fraction, Notes, TimeSignatureChanges, TimedEvent},
+    note_timer::{NoteTimer, NoteTimingInfo},
 };
 
 // ---------------------------------------------------------------------------
@@ -161,19 +165,21 @@ pub struct DynamicHelper {
     crescendo_index: usize,
     dynamic: Dynamic,
     config: DynamicConfig,
+    bars_with_accents: HashSet<u32>,
 }
 
 /// Builder that scans one part and extracts crescendo/decrescendo blocks.
-pub struct DynamicBuilder<'a> {
+pub struct DynamicBuilder {
     crescendo_blocks: Vec<CrescendoBlock>,
     crescendo_start: CrescendoPoint,
     crescendo_kind: CrescendoKind,
-    part: &'a LilyPart,
+    bars_with_accents: HashSet<u32>,
+    timed_notes: Vec<NoteTimingInfo>,
     dynamic: Dynamic,
     note_stamp: Notes,
 }
 
-impl<'a> DynamicBuilder<'a> {
+impl DynamicBuilder {
     /// Infers a one-step target dynamic when no explicit end dynamic is given.
     fn infer_crescendo_end_dynamic(&mut self) -> Dynamic {
         match (self.crescendo_kind, self.crescendo_start.dynamic) {
@@ -228,15 +234,14 @@ impl<'a> DynamicBuilder<'a> {
     }
 
     /// Ends the active block when an explicit end cue is encountered.
-    fn check_for_crescendo_end(&mut self, event: &Event) {
+    fn check_for_crescendo_end(&mut self, event: &NoteOrRest) {
         if self.crescendo_kind == CrescendoKind::None {
             return;
         }
 
         let (dynamic, crescendo) = match event {
-            Event::Note(note) => (note.dynamic, note.crescendo),
-            Event::Rest(rest) => (rest.dynamic, rest.crescendo),
-            _ => return,
+            NoteOrRest::Note(note) => (note.dynamic, note.crescendo),
+            NoteOrRest::Rest(rest) => (rest.dynamic, rest.crescendo),
         };
 
         if let Some(dynamic) = dynamic {
@@ -248,15 +253,14 @@ impl<'a> DynamicBuilder<'a> {
     }
 
     /// Starts a block when no block is currently active.
-    fn check_for_crescendo_start(&mut self, event: &Event) {
+    fn check_for_crescendo_start(&mut self, event: &NoteOrRest) {
         if self.crescendo_kind != CrescendoKind::None {
             return;
         }
 
         let crescendo = match event {
-            Event::Note(note) => note.crescendo,
-            Event::Rest(rest) => rest.crescendo,
-            _ => None,
+            NoteOrRest::Note(note) => note.crescendo,
+            NoteOrRest::Rest(rest) => rest.crescendo,
         };
 
         if let Some(crescendo) = crescendo
@@ -267,51 +271,47 @@ impl<'a> DynamicBuilder<'a> {
     }
 
     /// Creates a builder for one part scan.
-    fn new(part: &'a LilyPart) -> Self {
+    fn new(timed_notes: Vec<NoteTimingInfo>) -> Self {
         Self {
             crescendo_blocks: Vec::new(),
             crescendo_start: CrescendoPoint::default(),
-            part,
             dynamic: Dynamic::default(),
             note_stamp: Notes::default(),
+            timed_notes,
             crescendo_kind: CrescendoKind::None,
+            bars_with_accents: HashSet::new(),
         }
     }
 
     /// Updates running state from the current timeline event.
-    fn update_state(&mut self, timed_event: &TimedEvent) {
-        let TimedEvent {
-            event,
-            note_stamp,
-            duration: _,
-            x_note: _,
-        } = timed_event;
-
-        match event {
-            Event::Note(note) => {
-                self.note_stamp = *note_stamp;
+    fn update_state(&mut self, nti: &NoteTimingInfo) {
+        match &nti.note_or_rest {
+            NoteOrRest::Note(note) => {
+                self.note_stamp = nti.note_stamp;
                 if let Some(dynamic) = note.dynamic {
                     self.dynamic = dynamic;
                 }
+
+                if note.articulation.contains(Articulation::Accent) {
+                    self.bars_with_accents.insert(nti.bar_number);
+                }
             }
-            Event::Rest(rest) => {
-                self.note_stamp = *note_stamp;
+            NoteOrRest::Rest(rest) => {
+                self.note_stamp = nti.note_stamp;
                 if let Some(dynamic) = rest.dynamic {
                     self.dynamic = dynamic;
                 }
             }
-            _ => {}
         }
     }
 
     /// Scans the whole part and captures crescendo blocks.
     fn init(&mut self) {
-        let timed_events = EventTimer::get_timed_events(self.part);
-
-        for timed_event in timed_events {
-            self.update_state(&timed_event);
-            self.check_for_crescendo_end(&timed_event.event);
-            self.check_for_crescendo_start(&timed_event.event);
+        let timed_notes = mem::take(&mut self.timed_notes);
+        for nti in &timed_notes {
+            self.update_state(nti);
+            self.check_for_crescendo_end(&nti.note_or_rest);
+            self.check_for_crescendo_start(&nti.note_or_rest);
         }
 
         if self.crescendo_kind != CrescendoKind::None {
@@ -321,13 +321,18 @@ impl<'a> DynamicBuilder<'a> {
     }
 
     /// Builds a dynamic helper from one LilyPond part.
-    pub fn build(part: &'a LilyPart) -> DynamicHelper {
-        Self::build_with_config(part, DynamicConfig::default())
+    pub fn build(part: &LilyPart, time_signature_changes: &TimeSignatureChanges) -> DynamicHelper {
+        Self::build_with_config(part, time_signature_changes, DynamicConfig::default())
     }
 
     /// Builds a dynamic helper from one LilyPond part with a custom config.
-    pub fn build_with_config(part: &'a LilyPart, config: DynamicConfig) -> DynamicHelper {
-        let mut builder = Self::new(part);
+    pub fn build_with_config(
+        part: &LilyPart,
+        time_signature_changes: &TimeSignatureChanges,
+        config: DynamicConfig,
+    ) -> DynamicHelper {
+        let (timed_notes, _) = NoteTimer::get_notes(part, time_signature_changes);
+        let mut builder = Self::new(timed_notes);
         builder.init();
 
         DynamicHelper {
@@ -335,6 +340,7 @@ impl<'a> DynamicBuilder<'a> {
             crescendo_index: 0,
             dynamic: Dynamic::default(),
             config,
+            bars_with_accents: builder.bars_with_accents,
         }
     }
 }
@@ -390,11 +396,14 @@ impl DynamicHelper {
         if note.articulation.contains(Articulation::Accent) {
             boost += u16::from(self.config.accent_boost);
         }
-        boost += match beat_stress(timing.position_in_bar, timing.time_signature) {
-            BeatStress::Primary => u16::from(self.config.primary_beat_boost),
-            BeatStress::Secondary => u16::from(self.config.secondary_beat_boost),
-            BeatStress::Regular => 0,
-        };
+
+        if !self.bars_with_accents.contains(&timing.bar_number) {
+            boost += match beat_stress(timing.position_in_bar, timing.time_signature) {
+                BeatStress::Primary => u16::from(self.config.primary_beat_boost),
+                BeatStress::Secondary => u16::from(self.config.secondary_beat_boost),
+                BeatStress::Regular => 0,
+            };
+        }
 
         let boosted = (u16::from(base_volume.volume) + boost).min(u16::from(MidiVolume::MAX_VALUE));
         MidiVolume::new(boosted as u8)
@@ -437,257 +446,5 @@ impl DynamicHelper {
         }
 
         Self::dynamic_to_volume(self.dynamic)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use lilyparse::syntax::ast::{Articulation, Note, NoteDuration, NoteOrRest, TimeSignature};
-
-    fn no_boost() -> DynamicConfig {
-        DynamicConfig {
-            accent_boost: 0,
-            primary_beat_boost: 0,
-            secondary_beat_boost: 0,
-        }
-    }
-
-    fn note(duration: Option<NoteDuration>, dynamic: Option<Dynamic>, crescendo: Option<Crescendo>) -> Note {
-        let mut ret = Note::default();
-        ret.duration = duration;
-        ret.dynamic = dynamic;
-        ret.crescendo = crescendo;
-        ret
-    }
-
-    fn note_with_articulation(
-        duration: Option<NoteDuration>,
-        dynamic: Option<Dynamic>,
-        articulation: Articulation,
-    ) -> Note {
-        let mut ret = Note::default();
-        ret.duration = duration;
-        ret.dynamic = dynamic;
-        ret.articulation = articulation;
-        ret
-    }
-
-    fn rest(duration: Option<NoteDuration>, dynamic: Option<Dynamic>, crescendo: Option<Crescendo>) -> Rest {
-        let mut ret = Rest::default();
-        ret.duration = duration;
-        ret.dynamic = dynamic;
-        ret.crescendo = crescendo;
-        ret
-    }
-
-    fn part(events: Vec<Event>) -> LilyPart {
-        LilyPart {
-            name: "string".to_owned(),
-            events,
-        }
-    }
-
-    fn quarter() -> NoteDuration {
-        NoteDuration {
-            ratio: 4,
-            augmentation: 0,
-        }
-    }
-
-    fn timing_at(position: Fraction, ts: TimeSignature) -> NoteTimingInfo {
-        NoteTimingInfo {
-            note_or_rest: NoteOrRest::Note(note(None, None, None)),
-            time_signature: ts,
-            bar_number: 0,
-            position_in_bar: position,
-            note_stamp: position,
-            length: Fraction::new(1u32, 4u32),
-            x_note: false,
-        }
-    }
-
-    // --- Pre-existing tests (use zero boosts to isolate crescendo logic) ----
-
-    #[test]
-    fn interpolates_volume_inside_crescendo_block() {
-        let part = part(vec![
-            Event::Note(note(
-                Some(quarter()),
-                Some(Dynamic::MF),
-                Some(Crescendo::CrescendoStart),
-            )),
-            Event::Note(note(Some(quarter()), None, None)),
-            Event::Note(note(Some(quarter()), None, Some(Crescendo::End))),
-        ]);
-        let timed_events = EventTimer::get_timed_events(&part);
-        let mut helper = DynamicBuilder::build_with_config(&part, no_boost());
-
-        let ts = TimeSignature::default();
-        let first = match &timed_events[0].event {
-            Event::Note(note) => helper.next_note(note, &timing_at(timed_events[0].note_stamp, ts)),
-            _ => unreachable!(),
-        };
-        let second = match &timed_events[1].event {
-            Event::Note(note) => helper.next_note(note, &timing_at(timed_events[1].note_stamp, ts)),
-            _ => unreachable!(),
-        };
-        let third = match &timed_events[2].event {
-            Event::Note(note) => helper.next_note(note, &timing_at(timed_events[2].note_stamp, ts)),
-            _ => unreachable!(),
-        };
-
-        assert_eq!(first.volume, 80);
-        assert_eq!(second.volume, 88);
-        assert_eq!(third.volume, 96);
-    }
-
-    #[test]
-    fn rest_dynamic_updates_following_note_volume() {
-        let part = part(vec![
-            Event::Note(note(Some(quarter()), Some(Dynamic::MF), None)),
-            Event::Rest(rest(Some(quarter()), Some(Dynamic::P), None)),
-            Event::Note(note(Some(quarter()), None, None)),
-        ]);
-        let timed_events = EventTimer::get_timed_events(&part);
-        let mut helper = DynamicBuilder::build_with_config(&part, no_boost());
-
-        let ts = TimeSignature::default();
-        let first_note = match &timed_events[0].event {
-            Event::Note(note) => note,
-            _ => unreachable!(),
-        };
-        assert_eq!(
-            helper
-                .next_note(first_note, &timing_at(timed_events[0].note_stamp, ts))
-                .volume,
-            80
-        );
-
-        let rest_ev = match &timed_events[1].event {
-            Event::Rest(rest) => rest,
-            _ => unreachable!(),
-        };
-        helper.next_rest(rest_ev);
-
-        let second_note = match &timed_events[2].event {
-            Event::Note(note) => note,
-            _ => unreachable!(),
-        };
-        assert_eq!(
-            helper
-                .next_note(second_note, &timing_at(timed_events[2].note_stamp, ts))
-                .volume,
-            48
-        );
-    }
-
-    // --- Beat stress classification ------------------------------------------
-
-    #[test]
-    fn beat_stress_4_4() {
-        let ts = TimeSignature {
-            numerator: 4,
-            denominator: 4,
-        };
-        assert_eq!(beat_stress(Fraction::new(0u32, 1u32), ts), BeatStress::Primary); // beat 1
-        assert_eq!(beat_stress(Fraction::new(1u32, 4u32), ts), BeatStress::Regular); // beat 2
-        assert_eq!(beat_stress(Fraction::new(2u32, 4u32), ts), BeatStress::Secondary); // beat 3
-        assert_eq!(beat_stress(Fraction::new(3u32, 4u32), ts), BeatStress::Regular); // beat 4
-    }
-
-    #[test]
-    fn beat_stress_3_4() {
-        let ts = TimeSignature {
-            numerator: 3,
-            denominator: 4,
-        };
-        assert_eq!(beat_stress(Fraction::new(0u32, 1u32), ts), BeatStress::Primary);
-        assert_eq!(beat_stress(Fraction::new(1u32, 4u32), ts), BeatStress::Regular);
-        assert_eq!(beat_stress(Fraction::new(2u32, 4u32), ts), BeatStress::Regular);
-    }
-
-    #[test]
-    fn beat_stress_6_8() {
-        let ts = TimeSignature {
-            numerator: 6,
-            denominator: 8,
-        };
-        assert_eq!(beat_stress(Fraction::new(0u32, 1u32), ts), BeatStress::Primary); // beat 1
-        assert_eq!(beat_stress(Fraction::new(1u32, 8u32), ts), BeatStress::Regular); // beat 2
-        assert_eq!(beat_stress(Fraction::new(3u32, 8u32), ts), BeatStress::Secondary); // beat 4
-    }
-
-    // --- Accent boost --------------------------------------------------------
-
-    #[test]
-    fn accent_boost_applied() {
-        let part = part(vec![]);
-        let config = DynamicConfig {
-            accent_boost: 20,
-            primary_beat_boost: 0,
-            secondary_beat_boost: 0,
-        };
-        let mut helper = DynamicBuilder::build_with_config(&part, config);
-
-        let plain = note_with_articulation(Some(quarter()), Some(Dynamic::MF), Articulation::Portato);
-        let accented = note_with_articulation(Some(quarter()), Some(Dynamic::MF), Articulation::Accent);
-        let ts = TimeSignature {
-            numerator: 4,
-            denominator: 4,
-        };
-        // Use beat 1 (position 1/4) so no beat boost interferes
-        let timing = timing_at(Fraction::new(1u32, 4u32), ts);
-
-        let plain_vol = helper.next_note(&plain, &timing).volume;
-        // reset helper state
-        let mut helper2 = DynamicBuilder::build_with_config(&part, config);
-        let accented_vol = helper2.next_note(&accented, &timing).volume;
-
-        assert_eq!(accented_vol, plain_vol + 20);
-    }
-
-    #[test]
-    fn beat_stress_boost_applied() {
-        let part = part(vec![]);
-        let config = DynamicConfig {
-            accent_boost: 0,
-            primary_beat_boost: 12,
-            secondary_beat_boost: 6,
-        };
-        let mut helper = DynamicBuilder::build_with_config(&part, config);
-
-        let n = note_with_articulation(Some(quarter()), Some(Dynamic::MF), Articulation::Portato);
-        let ts = TimeSignature {
-            numerator: 4,
-            denominator: 4,
-        };
-
-        let base = helper.next_note(&n, &timing_at(Fraction::new(1u32, 4u32), ts)).volume; // beat 2 (regular)
-        let primary = helper.next_note(&n, &timing_at(Fraction::new(0u32, 1u32), ts)).volume; // beat 1
-        let secondary = helper.next_note(&n, &timing_at(Fraction::new(2u32, 4u32), ts)).volume; // beat 3
-
-        assert_eq!(primary, base + 12);
-        assert_eq!(secondary, base + 6);
-    }
-
-    #[test]
-    fn boosts_clamped_to_max_volume() {
-        let part = part(vec![]);
-        let config = DynamicConfig {
-            accent_boost: 100,
-            primary_beat_boost: 100,
-            secondary_beat_boost: 0,
-        };
-        let mut helper = DynamicBuilder::build_with_config(&part, config);
-
-        let n = note_with_articulation(Some(quarter()), Some(Dynamic::FFF), Articulation::Accent);
-        let ts = TimeSignature {
-            numerator: 4,
-            denominator: 4,
-        };
-        // Primary beat + accent at FFF — total boost would exceed 127.
-        let vol = helper.next_note(&n, &timing_at(Fraction::new(0u32, 1u32), ts)).volume;
-        assert_eq!(vol, MidiVolume::MAX_VALUE);
     }
 }

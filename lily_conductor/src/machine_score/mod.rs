@@ -105,15 +105,15 @@ struct LilyPartConverter {
 impl LilyPartConverter {
     /// Creates a converter with fresh timing/dynamic state.
     pub fn new(lily_part: &LilyPart, time_signature_changes: &TimeSignatureChanges) -> Self {
-        let dynamic_helper = DynamicBuilder::build(lily_part);
         let (timed_notes, bar_count) = NoteTimer::get_notes(lily_part, time_signature_changes);
+        let dynamic_helper = DynamicBuilder::build(lily_part, time_signature_changes);
 
         Self {
             timed_notes,
             bar_count,
             dynamic_helper,
             notes: Vec::new(),
-            articulation: Articulation::Staccato,
+            articulation: Articulation::Tenuto,
             next_note_tied: false,
             slur_in_progress: false,
         }
@@ -181,7 +181,7 @@ impl LilyPartConverter {
             self.articulation = articulation_except_accent;
         }
 
-        let volume = self.dynamic_helper.next_note(note, &timing_info);
+        let volume = self.dynamic_helper.next_note(note, timing_info);
         let (mut pluck_technique, finger_technique) = self.current_technique();
 
         if self.slur_in_progress {
@@ -223,10 +223,10 @@ impl LilyPartConverter {
         for timing_info in timed_notes {
             match &timing_info.note_or_rest {
                 NoteOrRest::Note(note) => {
-                    self.process_note(&note, &timing_info);
+                    self.process_note(note, &timing_info);
                 }
                 NoteOrRest::Rest(rest) => {
-                    self.process_rest(&rest);
+                    self.process_rest(rest);
                 }
             }
         }

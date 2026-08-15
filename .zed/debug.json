@@ -6,7 +6,7 @@
     "build": "Build lily_conductor",
     "program": "$ZED_WORKTREE_ROOT/lily_conductor/target/debug/lily_conductor",
     "args": [
-      "/home/jon/Documents/Untitled.ly",
+      "/home/jon/Documents/a.ly",
       "--calibration",
       "calibration2.csv",
       "--export"

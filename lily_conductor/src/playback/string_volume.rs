@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use anyhow::{Context, bail};
 use protocol::{Fret, PluckTechnique};
 
 use crate::machine_score::MidiVolume;
@@ -7,17 +8,66 @@ use crate::machine_score::MidiVolume;
 /// Calibrated pluck-volume range for one string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StringVolumeRange {
-    pub min: u8,
-    pub max: u8,
+    pub min: i32,
+    pub max: i32,
 }
+
+const NUMBER_OF_ENTRIES: usize = 13;
 
 impl StringVolumeRange {
     /// Maps MIDI volume (`0..=127`) into this string's calibrated pluck-volume range.
-    pub fn map_midi_volume(&self, volume: MidiVolume) -> u8 {
-        assert!(self.min <= self.max, "StringVolumeRange min must be <= max");
-        let span = u16::from(self.max - self.min);
-        let mapped = u16::from(self.min) + (u16::from(volume.volume) * span) / u16::from(MidiVolume::MAX_VALUE);
-        mapped as u8
+    pub fn map_midi_volume(&self, volume: MidiVolume) -> i32 {
+        let span = self.max - self.min;
+        self.min + i32::from(volume.volume) * span / i32::from(MidiVolume::MAX_VALUE)
+    }
+
+    pub fn neutral() -> Self {
+        Self { min: 0, max: 255 }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StringTable {
+    ranges: [StringVolumeRange; NUMBER_OF_ENTRIES],
+    hard_offset: i32,
+    hysteresis: i32,
+    last_requested_volume: i32,
+    last_returned_value: i32,
+}
+
+impl StringTable {
+    pub fn uniform(range: StringVolumeRange) -> Self {
+        Self {
+            ranges: [range; _],
+            hard_offset: 0,
+            hysteresis: 0,
+            last_requested_volume: i32::MIN,
+            last_returned_value: 0,
+        }
+    }
+
+    pub fn map_midi_volume(&mut self, fret: Fret, technique: PluckTechnique, volume: MidiVolume) -> u8 {
+        let range = self.ranges[fret as usize];
+        let mut ret = range.map_midi_volume(volume);
+        if technique == PluckTechnique::Hard {
+            ret += self.hard_offset;
+        }
+
+        let requested_value = ret;
+        if ret < self.last_requested_volume {
+            ret -= self.hysteresis;
+        } else if ret == self.last_requested_volume {
+            ret = self.last_returned_value;
+        }
+
+        if ret <= 0 || ret > 255 {
+            panic!("Invalid volume {} after compensation", ret);
+        }
+
+        self.last_requested_volume = requested_value;
+        self.last_returned_value = ret;
+
+        ret as u8
     }
 }
 
@@ -30,29 +80,26 @@ impl StringVolumeRange {
 /// increases, lowering the effective volume for a given pluck force.  The per-fret ranges
 /// compensate for this: they are expected to scale upward toward higher frets so that the
 /// perceived volume remains consistent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct StringVolumeTable {
-    pub ranges: [[(StringVolumeRange, StringVolumeRange); 13]; 6],
+    tables: [StringTable; 6],
 }
 
 impl StringVolumeTable {
-    /// Returns the calibrated range for a (part index, fret) pair.
-    pub fn range_for(&self, part_index: usize, fret: Fret, technique: PluckTechnique) -> StringVolumeRange {
-        let ranges = self
-            .ranges
-            .get(part_index)
-            .expect("part index outside of 0..=5 for StringVolumeTable")[fret as usize];
-
-        match technique {
-            PluckTechnique::Soft => ranges.0,
-            PluckTechnique::Hard => ranges.1,
-        }
+    pub fn map_midi_volume(
+        &mut self,
+        part_index: usize,
+        fret: Fret,
+        technique: PluckTechnique,
+        volume: MidiVolume,
+    ) -> u8 {
+        self.tables[part_index].map_midi_volume(fret, technique, volume)
     }
 
     /// Constructs a table where every (string, fret) cell has the same range.
     pub fn uniform(range: StringVolumeRange) -> Self {
         Self {
-            ranges: [[(range, range); 13]; 6],
+            tables: [StringTable::uniform(range); 6],
         }
     }
 }
@@ -77,79 +124,63 @@ impl StringVolumeTable {
     /// The `min` of each cell is taken from the CSV.  The `max` is computed as
     /// `min + volume_span`, clamped to 255.  Cells with `not_detected` (or any
     /// missing row) keep the provided `fallback` range.
-    pub fn from_csv(path: impl AsRef<Path>) -> Result<Self, String> {
-        let content =
-            std::fs::read_to_string(path.as_ref()).map_err(|e| format!("Cannot read calibration file: {e}"))?;
+    pub fn from_csv(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let content = std::fs::read_to_string(path.as_ref()).context("Cannot read calibration file")?;
 
-        let mut table = Self::uniform(StringVolumeRange::empty());
+        let lines: Vec<_> = content.lines().collect();
+        let mut ret = Self::uniform(StringVolumeRange::empty());
 
-        for (line_no, line) in content.lines().enumerate() {
-            // Skip header and blank lines.
-            if line_no == 0 || line.trim().is_empty() {
-                continue;
+        let mut i_line = 1;
+        for (i_string, table) in ret.tables.iter_mut().enumerate().rev() {
+            let mut raw_data = [(0i32, 0i32, 0i32, 0i32); NUMBER_OF_ENTRIES];
+            for data in raw_data.iter_mut() {
+                let line = lines[i_line];
+                let cols: Vec<&str> = line.splitn(6, ',').collect();
+
+                if parse_string_name(cols[0]) != Some(i_string) {
+                    bail!("Expected string #{}, found {}", i_string, cols[0]);
+                }
+
+                if cols.len() != 6 {
+                    bail!(
+                        "Calibration CSV line {}: expected 6 columns, got {}",
+                        i_line,
+                        cols.len()
+                    );
+                }
+
+                *data = (cols[2].parse()?, cols[3].parse()?, cols[4].parse()?, cols[5].parse()?);
+
+                i_line += 1;
             }
 
-            let cols: Vec<&str> = line.splitn(3, ',').collect();
-            if cols.len() != 4 {
-                return Err(format!(
-                    "Calibration CSV line {}: expected 3 columns, got {}",
-                    line_no + 1,
-                    cols.len()
-                ));
-            }
+            let up_sum: i32 = raw_data.iter().map(|d| d.0 + d.1).sum();
+            let down_sum: i32 = raw_data.iter().map(|d| d.2 + d.3).sum();
+            let hysteresis = (up_sum - down_sum) / (NUMBER_OF_ENTRIES as i32 * 2);
 
-            let part_index = parse_string_name(cols[0])
-                .ok_or_else(|| format!("Calibration CSV line {}: unknown string '{}'", line_no + 1, cols[0]))?;
-            let fret = parse_fret(cols[1])
-                .ok_or_else(|| format!("Calibration CSV line {}: unknown fret '{}'", line_no + 1, cols[1]))?;
+            let soft_sum: i32 = raw_data.iter().map(|d| d.0 + d.2).sum();
+            let hard_sum: i32 = raw_data.iter().map(|d| d.1 + d.3).sum();
 
-            let min_vol_soft = cols[2].trim();
-            let min_soft: u8 = min_vol_soft.parse().map_err(|_| {
-                format!(
-                    "Calibration CSV line {}: invalid min_volume_soft '{}'",
-                    line_no + 1,
-                    min_vol_soft
-                )
-            })?;
+            let hard_offset = (hard_sum - soft_sum) / (NUMBER_OF_ENTRIES as i32 * 2);
 
-            let min_vol_hard = cols[3].trim();
-            let min_hard: u8 = min_vol_hard.parse().map_err(|_| {
-                format!(
-                    "Calibration CSV line {}: invalid min_volume_hard '{}'",
-                    line_no + 1,
-                    min_vol_hard
-                )
-            })?;
+            table.hard_offset = hard_offset;
+            table.hysteresis = hysteresis;
 
-            table.ranges[part_index][fret as usize] = (
-                StringVolumeRange { min: min_soft, max: 0 },
-                StringVolumeRange { min: min_hard, max: 0 },
-            );
-        }
+            let span_top = raw_data[NUMBER_OF_ENTRIES - 1].0
+                + raw_data[NUMBER_OF_ENTRIES - 1].1
+                + raw_data[NUMBER_OF_ENTRIES - 1].2
+                + raw_data[NUMBER_OF_ENTRIES - 1].3;
+            let span_bottom = raw_data[0].0 + raw_data[0].1 + raw_data[0].2 + raw_data[0].3;
 
-        for range in &mut table.ranges {
-            if range.iter().find(|r| r.0.min == 0 || r.1.min == 0).is_some() {
-                return Err("Found empty range".to_owned());
-            }
+            let span = (span_top - span_bottom) * 2 / 4;
 
-            let min = range
-                .iter()
-                .map(|r| r.0.min)
-                .min()
-                .ok_or_else(|| "Range should contain items")?;
-            let max = range
-                .iter()
-                .map(|r| r.0.min)
-                .max()
-                .ok_or_else(|| "Range should contain items")?;
-            let span = (max - min) * 2;
-            for item in range {
-                item.0.max = item.0.min.saturating_add(span);
-                item.1.max = item.1.min.saturating_add(span);
+            for (i, range) in table.ranges.iter_mut().enumerate() {
+                range.min = raw_data[i].0;
+                range.max = range.min + span;
             }
         }
 
-        Ok(table)
+        Ok(ret)
     }
 }
 
@@ -161,31 +192,6 @@ fn parse_string_name(s: &str) -> Option<usize> {
         "G" => Some(2),
         "B" => Some(1),
         "e" => Some(0),
-        _ => None,
-    }
-}
-
-fn parse_fret(s: &str) -> Option<Fret> {
-    match s.trim() {
-        "NoFret" => Some(Fret::NoFret),
-        "Fret1" => Some(Fret::Fret1),
-        "Fret2" => Some(Fret::Fret2),
-        "Fret3" => Some(Fret::Fret3),
-        "Fret4" => Some(Fret::Fret4),
-        "Fret5" => Some(Fret::Fret5),
-        "Fret6" => Some(Fret::Fret6),
-        "Fret7" => Some(Fret::Fret7),
-        "Fret8" => Some(Fret::Fret8),
-        "Fret9" => Some(Fret::Fret9),
-        "Fret10" => Some(Fret::Fret10),
-        "Fret11" => Some(Fret::Fret11),
-        "Fret12" => Some(Fret::Fret12),
-        "Fret13" => Some(Fret::Fret13),
-        "Fret14" => Some(Fret::Fret14),
-        "Fret15" => Some(Fret::Fret15),
-        "Fret16" => Some(Fret::Fret16),
-        "Fret17" => Some(Fret::Fret17),
-        "Fret18" => Some(Fret::Fret18),
         _ => None,
     }
 }

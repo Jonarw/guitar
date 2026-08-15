@@ -24,9 +24,7 @@ fn build_volume_table(calibration_path: Option<&str>) -> Result<StringVolumeTabl
             eprintln!("Loaded calibration from '{path}'.");
             Ok(table)
         }
-        None => {
-            return Err("No path".to_owned());
-        }
+        None => Err("No path".to_owned()),
     }
 }
 
@@ -51,11 +49,11 @@ fn run() -> Result<(), String> {
     };
 
     machine_score.pre_process();
-    let volume_table = build_volume_table(calibration_path)?;
+    let mut volume_table = build_volume_table(calibration_path)?;
 
     let timeline = CommandTimeline::from_machine_score_with_string_filter(
         &machine_score,
-        &volume_table,
+        &mut volume_table,
         enabled_strings.as_deref(),
     );
 
@@ -123,20 +121,16 @@ fn parse_strings(value: Option<&String>, usage: &str) -> Result<Vec<protocol::Gu
         .collect()
 }
 
-fn parse_args<'a>(
-    bin_name: &str,
-    args: &'a [String],
-) -> Result<
-    (
-        &'a str,
-        Option<&'a str>,
-        bool,
-        Option<u32>,
-        Option<u32>,
-        Option<Vec<protocol::GuitarString>>,
-    ),
-    String,
-> {
+type CliArgs<'a> = (
+    &'a str,
+    Option<&'a str>,
+    bool,
+    Option<u32>,
+    Option<u32>,
+    Option<Vec<protocol::GuitarString>>,
+);
+
+fn parse_args<'a>(bin_name: &str, args: &'a [String]) -> Result<CliArgs<'a>, String> {
     let usage = format!(
         "Usage: {bin_name} <path-to-lilypond-file> [--calibration <csv-path>] [--export] [--start_bar <n>] [--end_bar <n>] [--string <strings>]"
     );

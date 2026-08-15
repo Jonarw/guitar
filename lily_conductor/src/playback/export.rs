@@ -1,4 +1,4 @@
-use protocol::{Fret, GuitarString, Message};
+use protocol::{Fret, GuitarString, Message, PluckTechnique};
 
 use super::timeline::CommandTimeline;
 
@@ -39,6 +39,8 @@ fn format_action(message: &Message) -> Result<String, String> {
         Message::Unfret(s, f) => format!("unfret {} {}", string_name(*s), fret_number(*f)),
         Message::UnfretFast(s, f) => format!("unfret_fast {} {}", string_name(*s), fret_number(*f)),
         Message::Dampen(s, f) => format!("dampen {} {}", string_name(*s), fret_number(*f)),
+        Message::PluckTechnique(s, t) => format!("pluck_technique {} {}", string_name(*s), pluck_technique(*t)),
+        Message::PluckSpeed(s, f) => format!("pluck_speed {} {}", string_name(*s), *f),
         other => {
             return Err(format!(
                 "message {other:?} cannot be represented in the conductor script format"
@@ -60,6 +62,13 @@ fn string_name(s: GuitarString) -> &'static str {
 
 fn fret_number(f: Fret) -> u8 {
     f as u8
+}
+
+fn pluck_technique(t: PluckTechnique) -> &'static str {
+    match t {
+        PluckTechnique::Soft => "soft",
+        PluckTechnique::Hard => "hard",
+    }
 }
 
 #[cfg(test)]

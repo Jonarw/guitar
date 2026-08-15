@@ -1,5 +1,3 @@
-use std::default;
-
 use bitmask_enum::bitmask;
 pub const NUMBER_OF_STRINGS: usize = 6;
 

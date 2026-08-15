@@ -36,8 +36,7 @@ impl EventTimer {
             dotted_denominator *= 2;
         }
 
-        let fraction = Notes::new(dotted_numerator, u32::from(note_duration.ratio) * dotted_denominator);
-        fraction
+        Notes::new(dotted_numerator, u32::from(note_duration.ratio) * dotted_denominator)
     }
 
     /// Converts a parsed LilyPond duration to a fractional note length.

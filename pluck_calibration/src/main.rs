@@ -120,14 +120,16 @@ fn main() -> Result<()> {
 
     // --- Calibration sweep --------------------------------------------------
     println!();
-    println!("String | Fret    | Soft Vol | Hard Vol");
-    println!("-------|---------|----------|----------");
+    println!("String | Fret    | Soft Up | Hard Up | Soft Down | Hard Down");
+    println!("-------|---------|---------|---------|-----------|----------");
 
     let mut results: Vec<(
         /*string_name*/ &str,
         Fret,
-        u8, // soft min volume
-        u8, // hard min volume
+        u8, // soft up-threshold volume
+        u8, // hard up-threshold volume
+        u8, // soft down-threshold volume
+        u8, // hard down-threshold volume
     )> = Vec::new();
 
     for (guitar_string, string_name, max_frets) in STRING_CONFIGS {
@@ -138,19 +140,29 @@ fn main() -> Result<()> {
         let mut previous: Option<(u8, u8)> = None;
 
         for &fret in frets {
-            // Carry the previous fret's *lower* threshold forward as the next
+            // Carry the previous fret's *lower* up-threshold forward as the next
             // start volume.  Soft isn't necessarily quieter than hard (it
             // depends on mechanical tolerances), so use min(soft, hard).
             let start_vol = previous.map(|(soft, hard)| soft.min(hard)).unwrap_or(INITIAL_VOLUME);
 
-            let (soft_vol, hard_vol) = find_min_volume(start_vol, &mut *port, &capture, guitar_string, fret)
+            let spot = find_min_volume(start_vol, &mut *port, &capture, guitar_string, fret)
                 .with_context(|| format!("calibration failed for string {string_name} at {fret:?}"))?;
 
             let fret_label = format!("{fret:?}");
-            println!("{string_name:6} | {fret_label:7} | {soft_vol:8} | {hard_vol}");
+            println!(
+                "{string_name:6} | {fret_label:7} | {:7} | {:7} | {:9} | {}",
+                spot.soft_up, spot.hard_up, spot.soft_down, spot.hard_down
+            );
 
-            previous = Some((soft_vol, hard_vol));
-            results.push((string_name, fret, soft_vol, hard_vol));
+            previous = Some((spot.soft_up, spot.hard_up));
+            results.push((
+                string_name,
+                fret,
+                spot.soft_up,
+                spot.hard_up,
+                spot.soft_down,
+                spot.hard_down,
+            ));
             thread::sleep(Duration::from_millis(BETWEEN_STEPS_MS));
         }
 
@@ -258,23 +270,34 @@ impl AudioCapture {
 // Calibration logic
 // ---------------------------------------------------------------------------
 
+/// Calibration result for one (string, fret) spot.
+#[derive(Clone, Copy)]
+struct SpotCalibration {
+    /// Lowest volume (sweeping up) at which the soft pluck produces a tone.
+    soft_up: u8,
+    /// Lowest volume (sweeping up) at which the hard pluck produces a tone.
+    hard_up: u8,
+    /// Highest volume (sweeping down) at which the soft pluck stops producing a
+    /// tone — i.e. the first silent step when decreasing from `soft_up`.
+    soft_down: u8,
+    /// Same, for the hard pluck.
+    hard_down: u8,
+}
+
 fn find_min_volume(
     start_vol: u8,
     port: &mut dyn Write,
     capture: &AudioCapture,
     guitar_string: GuitarString,
     fret: Fret,
-) -> Result<(u8, u8)> {
+) -> Result<SpotCalibration> {
     let mut vol = start_vol;
 
-    send_message(port, &Message::Dampen(guitar_string, Fret::Fret12))?;
     if fret != Fret::NoFret {
         send_message(port, &Message::FretQuiet(guitar_string, fret))?;
     }
 
-    thread::sleep(Duration::from_millis(FRET_PREP_MS / 2));
-    send_message(port, &Message::Unfret(guitar_string, Fret::Fret12))?;
-    thread::sleep(Duration::from_millis(FRET_PREP_MS / 2));
+    thread::sleep(Duration::from_millis(FRET_PREP_MS));
 
     if start_vol == INITIAL_VOLUME {
         // --- Coarse search: advance by COARSE_STEP until first sound detected ---
@@ -293,9 +316,6 @@ fn find_min_volume(
         }
 
         vol = vol.saturating_sub(COARSE_STEP * 2);
-        send_message(port, &Message::Dampen(guitar_string, Fret::Fret12))?;
-        thread::sleep(Duration::from_millis(1000));
-        send_message(port, &Message::Unfret(guitar_string, Fret::Fret12))?;
         thread::sleep(Duration::from_millis(1000));
     }
 
@@ -325,6 +345,16 @@ fn find_min_volume(
         vol += FINE_STEP;
     }
 
+    // A calibration with missing spots is unusable, so fail hard.
+    let soft_up = soft_found.context("no soft-pluck threshold found below MAX_VOLUME")?;
+    let hard_up = hard_found.context("no hard-pluck threshold found below MAX_VOLUME")?;
+
+    // --- Hysteresis measurement --------------------------------------------
+    // Now sweep *down* in increments of one until each technique stops
+    // producing a tone.  The recorded value is the first silent volume, i.e.
+    // one below the last volume that still produced a tone.
+    let (soft_down, hard_down) = measure_down_thresholds(port, capture, guitar_string, soft_up, hard_up)?;
+
     if fret != Fret::NoFret {
         send_message(port, &Message::Unfret(guitar_string, fret))?;
     }
@@ -332,10 +362,50 @@ fn find_min_volume(
     // Ensure the string is left in soft mode for the next fret's search.
     send_message(port, &Message::PluckTechnique(guitar_string, PluckTechnique::Soft))?;
 
-    // A calibration with missing spots is unusable, so fail hard.
-    let soft = soft_found.context("no soft-pluck threshold found below MAX_VOLUME")?;
-    let hard = hard_found.context("no hard-pluck threshold found below MAX_VOLUME")?;
-    Ok((soft, hard))
+    Ok(SpotCalibration {
+        soft_up,
+        hard_up,
+        soft_down,
+        hard_down,
+    })
+}
+
+/// Sweeps the volume down in steps of one, testing both techniques at each
+/// step, and records for each technique the first volume at which it stops
+/// producing a tone.  Starts from just below `min(soft_up, hard_up)` since both
+/// techniques are known to still fire at their respective up-thresholds.
+fn measure_down_thresholds(
+    port: &mut dyn Write,
+    capture: &AudioCapture,
+    guitar_string: GuitarString,
+    soft_up: u8,
+    hard_up: u8,
+) -> Result<(u8, u8)> {
+    let mut vol = soft_up.max(hard_up);
+    let mut soft_down: Option<u8> = None;
+    let mut hard_down: Option<u8> = None;
+
+    loop {
+        if vol == 0 {
+            break;
+        }
+        vol -= FINE_STEP;
+
+        let (soft, hard) = test_pluck(port, capture, guitar_string, vol)?;
+        if !soft && soft_down.is_none() {
+            soft_down = Some(vol);
+        }
+        if !hard && hard_down.is_none() {
+            hard_down = Some(vol);
+        }
+        if soft_down.is_some() && hard_down.is_some() {
+            break;
+        }
+    }
+
+    let soft_down = soft_down.context("soft pluck still produced a tone at volume 0")?;
+    let hard_down = hard_down.context("hard pluck still produced a tone at volume 0")?;
+    Ok((soft_down, hard_down))
 }
 
 /// At a given volume, fires a hard pluck and captures its own audio window, then
@@ -352,9 +422,11 @@ fn test_pluck(
     thread::sleep(Duration::from_millis(VOLUME_PREP_MS));
 
     // --- Hard pluck, captured in its own window ---
+    send_message(port, &Message::PluckTechnique(guitar_string, PluckTechnique::Hard))?;
+    thread::sleep(Duration::from_millis(BETWEEN_TECHNIQUES_MS));
     let hard_samples = capture.capture_around(TIME_PER_STEP_MS, || {
-        send_message(port, &Message::PluckTechnique(guitar_string, PluckTechnique::Hard))?;
         send_message(port, &Message::Pluck(guitar_string))?;
+        thread::sleep(Duration::from_millis(TIME_PER_STEP_MS));
         Ok(())
     })?;
     let hard_rms = max_window_rms(&hard_samples, capture.sample_rate);
@@ -364,15 +436,16 @@ fn test_pluck(
     }
 
     // --- Soft pluck, captured in a separate window ---
+    send_message(port, &Message::PluckTechnique(guitar_string, PluckTechnique::Soft))?;
+    thread::sleep(Duration::from_millis(BETWEEN_TECHNIQUES_MS));
     let soft_samples = capture.capture_around(TIME_PER_STEP_MS, || {
-        send_message(port, &Message::PluckTechnique(guitar_string, PluckTechnique::Soft))?;
-        thread::sleep(Duration::from_millis(BETWEEN_TECHNIQUES_MS));
         send_message(port, &Message::Pluck(guitar_string))?;
+        thread::sleep(Duration::from_millis(TIME_PER_STEP_MS));
         Ok(())
     })?;
     let soft_rms = max_window_rms(&soft_samples, capture.sample_rate);
 
-    println!("String: {guitar_string:?}, Vol: {volume}, hard RMS: {hard_rms}, soft RMS: {soft_rms}");
+    //println!("String: {guitar_string:?}, Vol: {volume}, hard RMS: {hard_rms}, soft RMS: {soft_rms}");
 
     Ok((soft_rms > DETECTION_THRESHOLD, hard_rms > DETECTION_THRESHOLD))
 }
@@ -413,30 +486,38 @@ fn send_message(port: &mut dyn Write, msg: &Message) -> Result<()> {
 ///
 /// Format:
 /// ```
-/// string,fret,min_volume_soft,min_volume_hard
-/// E,NoFret,140,156
-/// E,Fret1,141,157
-/// E,Fret2,143,159
+/// string,fret,min_volume_soft_up,min_volume_hard_up,min_volume_soft_down,min_volume_hard_down
+/// E,NoFret,140,156,134,150
+/// E,Fret1,141,157,135,151
 /// ...
 /// ```
 ///
-/// `min_volume_soft` / `min_volume_hard` are the lowest PluckVolume (0–255)
-/// that produced a detectable sound for the soft / hard technique.  The
-/// calibration aborts if no threshold is found below MAX_VOLUME, so every row
-/// always has both values.
+/// `*_up` columns are the lowest PluckVolume (0–255) that produced a detectable
+/// sound when sweeping the volume upward; `*_down` columns are the first volume
+/// that *stopped* producing a sound when sweeping back down from the
+/// up-threshold.  The gap between the two is the mechanism's hysteresis.
+/// The calibration aborts if any threshold isn't found, so every row is always
+/// fully populated.
 /// `lily_conductor` will read this file to populate a `StringVolumeTable`,
 /// mapping the min volume to the minimum of a per-(string, fret) range and
 /// using a configured constant for the maximum.
-fn write_csv(path: &str, results: &[(&str, Fret, u8, u8)]) -> Result<()> {
+fn write_csv(path: &str, results: &[(&str, Fret, u8, u8, u8, u8)]) -> Result<()> {
     use std::fs::File;
     use std::io::BufWriter;
 
     let file = File::create(path)?;
     let mut w = BufWriter::new(file);
 
-    writeln!(w, "string,fret,min_volume_soft,min_volume_hard")?;
-    for (string_name, fret, soft_vol, hard_vol) in results {
-        writeln!(w, "{},{:?},{},{}", string_name, fret, soft_vol, hard_vol)?;
+    writeln!(
+        w,
+        "string,fret,min_volume_soft_up,min_volume_hard_up,min_volume_soft_down,min_volume_hard_down"
+    )?;
+    for (string_name, fret, soft_up, hard_up, soft_down, hard_down) in results {
+        writeln!(
+            w,
+            "{},{:?},{},{},{},{}",
+            string_name, fret, soft_up, hard_up, soft_down, hard_down
+        )?;
     }
 
     Ok(())
