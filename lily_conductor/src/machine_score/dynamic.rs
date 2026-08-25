@@ -1,13 +1,11 @@
 use std::{collections::HashSet, mem};
 
 use fraction::Zero;
-use lilyparse::syntax::ast::{
-    self, Articulation, Crescendo, Dynamic, Event, LilyPart, NoteOrRest, Rest, TimeSignature,
-};
+use lilyparse::syntax::ast::{self, Articulation, Crescendo, Dynamic, LilyPart, NoteOrRest, Rest, TimeSignature};
 
 use crate::machine_score::{
     MidiVolume,
-    event_timer::{EventTimer, Fraction, Notes, TimeSignatureChanges, TimedEvent},
+    event_timer::{Fraction, Notes, TimeSignatureChanges},
     note_timer::{NoteTimer, NoteTimingInfo},
 };
 
@@ -414,12 +412,11 @@ impl DynamicHelper {
     fn base_volume(&mut self, note: &ast::Note, timing: &NoteTimingInfo) -> MidiVolume {
         if let Some(dynamic) = note.dynamic {
             self.dynamic = dynamic;
-            return Self::dynamic_to_volume(dynamic);
         }
 
         while self.crescendo_index < self.crescendo_blocks.len() {
             let block = &self.crescendo_blocks[self.crescendo_index];
-            if timing.note_stamp >= block.end.time {
+            if timing.note_stamp == block.end.time {
                 if note.dynamic.is_none() {
                     self.dynamic = block.end.dynamic;
                 }

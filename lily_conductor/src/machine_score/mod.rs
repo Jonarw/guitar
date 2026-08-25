@@ -171,6 +171,11 @@ impl LilyPartConverter {
 
     /// Applies rest timing progression.
     fn process_rest(&mut self, rest: &Rest) {
+        let articulation_except_accent = rest.articulation.and(Articulation::Accent.not());
+        if !articulation_except_accent.is_none() {
+            self.articulation = articulation_except_accent;
+        }
+
         self.dynamic_helper.next_rest(rest);
     }
 

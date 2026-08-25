@@ -34,7 +34,7 @@ impl ChannelSignals {
 }
 
 static SIGNALS: [ChannelSignals; 3] = [ChannelSignals::new(), ChannelSignals::new(), ChannelSignals::new()];
-static VARIANT: Variant = Variant::Left;
+static VARIANT: Variant = Variant::Right;
 
 #[derive(Clone, Copy)]
 pub enum Variant {
@@ -290,7 +290,7 @@ async fn stepper_task(stepper: PluckStepper, signal: &'static PluckSignal) -> ! 
 
         match action {
             Message::PluckEnable(_) => stepper.enable().await,
-            Message::PluckDisable(_) => stepper.disable().await,
+            Message::PluckDisable(_) | Message::Reset => stepper.disable().await,
             Message::Pluck(_) => stepper.pluck().await,
             Message::PluckTechnique(_, t) => stepper.set_technique(t).await,
             Message::PluckSpeed(_, s) => stepper.set_speed(s),

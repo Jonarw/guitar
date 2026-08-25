@@ -1,0 +1,8 @@
+[package]
+name = "midi_conductor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+midir = "0.11"
+midly = "0.5"

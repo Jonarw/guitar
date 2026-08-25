@@ -4,7 +4,7 @@ use winnow::{
     combinator::{alt, delimited, opt, preceded, repeat, seq, terminated},
     error::{ContextError, StrContext::Label},
     prelude::*,
-    token::take_while,
+    token::{any, take_while},
 };
 
 use crate::syntax::ast::*;
@@ -344,10 +344,20 @@ fn bar_line(input: &mut &str) -> Result<()> {
     '|'.value(()).context(Label("Barline")).parse_next(input)
 }
 
+fn special_command<'a, O, P>(parser: P) -> impl Parser<&'a str, O, ContextError>
+where
+    P: Parser<&'a str, O, ContextError>,
+{
+    preceded('#', delimited('(', parser, ')')).context(Label("Special Command"))
+}
+
 fn discard(input: &mut &str) -> Result<()> {
-    repeat(0.., alt((multispace1.void(), comment.void())))
-        .context(Label("Discard"))
-        .parse_next(input)
+    repeat(
+        0..,
+        alt((multispace1.void(), comment.void(), special_command(repeat(1.., any)))),
+    )
+    .context(Label("Discard"))
+    .parse_next(input)
 }
 
 fn part_discard(input: &mut &str) -> Result<()> {
