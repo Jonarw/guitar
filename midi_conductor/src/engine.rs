@@ -112,7 +112,7 @@ impl FretStates {
     }
 
     pub fn index_to_fret(&self, index: u8) -> Option<Fret> {
-        if index as usize > self.fret_states.len() {
+        if index as usize >= self.fret_states.len() {
             None
         } else {
             Some(fret_from_number(index))
@@ -217,9 +217,9 @@ impl GuitarEngine {
 
     /// Handles one MIDI event that occurred at `event_time`.
     pub fn handle(&mut self, event_time: Instant, event: EngineEvent, sink: &mut dyn CommandSink) {
-        self.handle_pending_unfret();
-
         let event_time = event_time + self.latency;
+        self.handle_pending_unfret(event_time);
+
         match event {
             EngineEvent::NoteOn { channel, key, velocity } => self.note_on(event_time, channel, key, velocity, sink),
             EngineEvent::NoteOff { channel, key } => self.note_off(event_time, channel, key, sink),
@@ -227,12 +227,11 @@ impl GuitarEngine {
         }
     }
 
-    fn handle_pending_unfret(&mut self) {
-        let now = Instant::now();
+    fn handle_pending_unfret(&mut self, event_time: Instant) {
         for state in self.states.iter_mut() {
             for (_, state) in state.fret_states.frets_mut() {
                 if let FretState::Releasing(time) = state
-                    && *time < now
+                    && *time < event_time
                 {
                     *state = FretState::Idle;
                 }
