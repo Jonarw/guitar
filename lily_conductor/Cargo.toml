@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 lilyparse = { path = "../lilyparse" }
 protocol = { path = "../protocol" }
+string_volume = { path = "../string_volume" }
 fraction = "0.15"
 serialport = { version = "4", default-features = false }
 anyhow = "1"

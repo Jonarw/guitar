@@ -1,0 +1,8 @@
+[package]
+name = "string_volume"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+protocol = { path = "../protocol" }
+anyhow = "1"

@@ -6,3 +6,10 @@ edition = "2024"
 [dependencies]
 midir = "0.11"
 midly = "0.5"
+serialport = { version = "4", default-features = false }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+ctrlc = "3"
+protocol = { path = "../protocol" }
+string_volume = { path = "../string_volume" }
+enum-iterator = "2"

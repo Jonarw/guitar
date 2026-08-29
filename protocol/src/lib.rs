@@ -1,5 +1,6 @@
 #![no_std]
 
+use enum_iterator::Sequence;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize, Default)]
@@ -63,6 +64,19 @@ impl Message {
             | Message::UnfretFast(guitar_string, _)
             | Message::Dampen(guitar_string, _)
             | Message::FretCalibration(guitar_string, _) => Some(*guitar_string),
+            _ => None,
+        }
+    }
+
+    pub fn get_string_and_fret(&self) -> Option<(GuitarString, Fret)> {
+        match self {
+            Message::FretFast(guitar_string, fret)
+            | Message::FretQuiet(guitar_string, fret)
+            | Message::FretAdaptive(guitar_string, fret)
+            | Message::Unfret(guitar_string, fret)
+            | Message::UnfretFast(guitar_string, fret)
+            | Message::Dampen(guitar_string, fret)
+            | Message::FretCalibration(guitar_string, fret) => Some((*guitar_string, *fret)),
             _ => None,
         }
     }
@@ -151,7 +165,7 @@ impl From<u8> for PluckVolume {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize, Sequence, Hash)]
 #[repr(u8)]
 pub enum GuitarString {
     E,
@@ -163,7 +177,7 @@ pub enum GuitarString {
     e,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize, Hash)]
 #[repr(u8)]
 pub enum Fret {
     NoFret,

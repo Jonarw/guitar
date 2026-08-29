@@ -2,10 +2,10 @@ use fraction::Zero;
 use lilyparse::syntax::ast::Tempo;
 use protocol::PluckTechnique;
 use protocol::{Fret, GuitarString, Message};
+use string_volume::{StringVolumeRange, StringVolumeTable};
 
 use crate::machine_score::event_timer::Notes;
 use crate::machine_score::{FingerTechnique, MachineScore, MidiVolume, Note};
-use crate::playback::string_volume::{StringVolumeRange, StringVolumeTable};
 
 /// Guitar string configuration: (string enum, open-string MIDI pitch, max controllable frets).
 ///
@@ -514,7 +514,7 @@ impl CommandTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{machine_score::event_timer::Fraction, playback::string_volume::StringVolumeRange};
+    use crate::machine_score::event_timer::Fraction;
     use lilyparse::syntax::ast::{self, *};
 
     fn quarter_tempo(bpm: u16) -> Tempo {

@@ -120,6 +120,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum-iterator"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4549325971814bda7a44061bf3fe7e487d447cba01e4220a4b454d630d7a016"
+dependencies = [
+ "enum-iterator-derive",
+]
+
+[[package]]
+name = "enum-iterator-derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "685adfa4d6f3d765a26bc5dbc936577de9abf756c1feeb3089b01dd395034842"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "fraction"
 version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -183,6 +203,7 @@ dependencies = [
  "lilyparse",
  "protocol",
  "serialport",
+ "string_volume",
 ]
 
 [[package]]
@@ -326,6 +347,7 @@ name = "protocol"
 version = "0.1.0"
 dependencies = [
  "defmt",
+ "enum-iterator",
  "postcard",
  "serde",
 ]
@@ -422,6 +444,14 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "string_volume"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "protocol",
+]
 
 [[package]]
 name = "syn"

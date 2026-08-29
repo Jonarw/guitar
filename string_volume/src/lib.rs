@@ -1,9 +1,32 @@
+//! Calibrated pluck-volume tables shared by the conductors.
+//!
+//! Extracted from `lily_conductor` so that both the score-based
+//! (`lily_conductor`) and the real-time MIDI (`midi_conductor`) playback
+//! engines map dynamics to hardware pluck volumes the same way.
+
 use std::path::Path;
 
-use anyhow::{Context, bail};
-use protocol::{Fret, PluckTechnique};
+use anyhow::{bail, Context};
+use protocol::{Fret, GuitarString, PluckTechnique};
 
-use crate::machine_score::MidiVolume;
+/// MIDI note velocity in range `0..=127`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiVolume {
+    pub volume: u8,
+}
+
+impl MidiVolume {
+    pub const MAX_VALUE: u8 = 127;
+
+    /// Creates a validated MIDI volume value.
+    pub fn new(volume: u8) -> Self {
+        if volume > Self::MAX_VALUE {
+            panic!("MIDI volume outside of allowed range");
+        }
+
+        Self { volume }
+    }
+}
 
 /// Calibrated pluck-volume range for one string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +46,10 @@ impl StringVolumeRange {
 
     pub fn neutral() -> Self {
         Self { min: 0, max: 255 }
+    }
+
+    pub fn empty() -> Self {
+        Self { min: 0, max: 0 }
     }
 }
 
@@ -96,21 +123,23 @@ impl StringVolumeTable {
         self.tables[part_index].map_midi_volume(fret, technique, volume)
     }
 
+    pub fn map_midi_volume_string(
+        &mut self,
+        string: GuitarString,
+        fret: Fret,
+        technique: PluckTechnique,
+        volume: MidiVolume,
+    ) -> u8 {
+        self.tables[5 - string as usize].map_midi_volume(fret, technique, volume)
+    }
+
     /// Constructs a table where every (string, fret) cell has the same range.
     pub fn uniform(range: StringVolumeRange) -> Self {
         Self {
             tables: [StringTable::uniform(range); 6],
         }
     }
-}
 
-impl StringVolumeRange {
-    pub fn empty() -> Self {
-        Self { min: 0, max: 0 }
-    }
-}
-
-impl StringVolumeTable {
     /// Loads a `StringVolumeTable` from a CSV file produced by `pluck_calibration`.
     ///
     /// Expected format (header required):

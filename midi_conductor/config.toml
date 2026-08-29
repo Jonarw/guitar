@@ -1,0 +1,24 @@
+# midi_conductor configuration.
+#
+# Place next to the executable as `config.toml`, or pass a path as the single
+# CLI argument: `midi_conductor path/to/config.toml`.
+# All fields are optional; the values below are the defaults.
+
+# Serial device of the RS485 interface.
+serial_port = "/dev/ttyUSB0"
+
+# Serial baud rate.
+baud_rate = 115200
+
+# Fixed lookahead latency in milliseconds. All hardware commands are scheduled
+# this long after the MIDI event, leaving room for fret/volume lead times.
+# Must be >= ~250 for full lead times (volume 200 ms, fret 60 ms).
+latency_ms = 250
+
+# Pluck-volume calibration CSV, as produced by pluck_calibration.
+# Relative paths are resolved against the directory of this config file.
+calibration_csv = "calibration.csv"
+
+# Substring of the MIDI input port to subscribe to.
+# With MuseScore set to the system "Midi Through" device, keep the default.
+midi_port_substring = "Midi Through Port-0"

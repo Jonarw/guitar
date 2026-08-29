@@ -11,3 +11,4 @@ postcard = { version = "1", features = ["use-defmt"] }
 # By default, `serde` has the `std` feature enabled, which makes it unsuitable for embedded targets
 # disabling default-features fixes this
 serde = { version = "1.0.*", default-features = false }
+enum-iterator = "2"

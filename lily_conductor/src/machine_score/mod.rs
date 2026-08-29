@@ -34,24 +34,7 @@ impl MidiPitch {
     }
 }
 
-/// MIDI note velocity in range `0..=127`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MidiVolume {
-    pub volume: u8,
-}
-
-impl MidiVolume {
-    pub(crate) const MAX_VALUE: u8 = 127;
-
-    /// Creates a validated MIDI volume value.
-    pub fn new(volume: u8) -> Self {
-        if volume > Self::MAX_VALUE {
-            panic!("MIDI volume outside of allowed range");
-        }
-
-        Self { volume }
-    }
-}
+pub use string_volume::MidiVolume;
 
 /// One machine-playable note instruction.
 #[derive(Debug, Clone, PartialEq, Eq)]

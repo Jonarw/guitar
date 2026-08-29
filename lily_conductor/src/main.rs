@@ -9,8 +9,9 @@ use std::{
 
 use lilyparse::syntax::parse;
 use machine_score::MachineScore;
+use string_volume::StringVolumeTable;
 
-use crate::playback::{CommandTimeline, string_volume::StringVolumeTable};
+use crate::playback::CommandTimeline;
 
 /// Default serial port for the guitar RS485 interface.
 const DEFAULT_SERIAL_PORT: &str = "/dev/ttyUSB0";
