@@ -17,7 +17,7 @@ use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
 use enum_iterator::all;
-use protocol::{GuitarString, Message};
+use protocol::{Fret, GuitarString, Message};
 use string_volume::{StringVolumeRange, StringVolumeTable};
 
 use crate::config::Config;
@@ -48,6 +48,11 @@ fn run() -> Result<(), String> {
         scheduler.schedule(
             now + Duration::from_millis(PLUCK_ENABLE_DELAY_MS),
             Message::PluckEnable(string),
+        );
+
+        scheduler.schedule(
+            now + Duration::from_millis(PLUCK_ENABLE_DELAY_MS),
+            Message::Dampen(string, Fret::Fret1),
         );
     }
 

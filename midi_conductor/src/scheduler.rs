@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
 
-use protocol::{Message, MAX_FRAME_SIZE};
+use protocol::{MAX_FRAME_SIZE, Message};
 
 /// Destination for commands produced by the playback engine.
 ///
@@ -106,18 +106,15 @@ fn writer_loop(port: &mut dyn serialport::SerialPort, rx: Receiver<SchedulerComm
 
         match received {
             Some(SchedulerCommand::Schedule { at, message }) => {
-                match message.get_string_and_fret() {
-                    Some(new_sf) => {
-                        // extract and remove all items that refer to the same (string, fret) combination
-                        // AND are scheduled later than the new item
-                        scheduled_items
-                            .extract_if(.., |item| match item.message.get_string_and_fret() {
-                                Some(existing_sf) => existing_sf == new_sf && item.at > at,
-                                None => false,
-                            })
-                            .for_each(drop);
-                    }
-                    None => {}
+                if let Some(new_sf) = message.get_string_and_fret() {
+                    // extract and remove all items that refer to the same (string, fret) combination
+                    // AND are scheduled later than the new item
+                    scheduled_items
+                        .extract_if(.., |item| match item.message.get_string_and_fret() {
+                            Some(existing_sf) => existing_sf == new_sf && item.at > at,
+                            None => false,
+                        })
+                        .for_each(drop);
                 }
 
                 scheduled_items.push(ScheduledItem { at, message });

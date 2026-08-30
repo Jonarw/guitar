@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use protocol::{Fret, GuitarString, PluckTechnique};
 
 /// MIDI note velocity in range `0..=127`.
@@ -120,7 +120,7 @@ impl StringVolumeTable {
         technique: PluckTechnique,
         volume: MidiVolume,
     ) -> u8 {
-        self.tables[part_index].map_midi_volume(fret, technique, volume)
+        self.tables[5 - part_index].map_midi_volume(fret, technique, volume)
     }
 
     pub fn map_midi_volume_string(
@@ -130,7 +130,7 @@ impl StringVolumeTable {
         technique: PluckTechnique,
         volume: MidiVolume,
     ) -> u8 {
-        self.tables[5 - string as usize].map_midi_volume(fret, technique, volume)
+        self.tables[string as usize].map_midi_volume(fret, technique, volume)
     }
 
     /// Constructs a table where every (string, fret) cell has the same range.
@@ -160,7 +160,7 @@ impl StringVolumeTable {
         let mut ret = Self::uniform(StringVolumeRange::empty());
 
         let mut i_line = 1;
-        for (i_string, table) in ret.tables.iter_mut().enumerate().rev() {
+        for (i_string, table) in ret.tables.iter_mut().enumerate() {
             let mut raw_data = [(0i32, 0i32, 0i32, 0i32); NUMBER_OF_ENTRIES];
             for data in raw_data.iter_mut() {
                 let line = lines[i_line];
@@ -215,12 +215,12 @@ impl StringVolumeTable {
 
 fn parse_string_name(s: &str) -> Option<usize> {
     match s.trim() {
-        "E" => Some(5),
-        "A" => Some(4),
-        "D" => Some(3),
-        "G" => Some(2),
-        "B" => Some(1),
-        "e" => Some(0),
+        "E" => Some(0),
+        "A" => Some(1),
+        "D" => Some(2),
+        "G" => Some(3),
+        "B" => Some(4),
+        "e" => Some(5),
         _ => None,
     }
 }

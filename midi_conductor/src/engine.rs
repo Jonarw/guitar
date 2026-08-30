@@ -42,7 +42,7 @@ pub fn get_base_pitch(string: GuitarString) -> MidiPitch {
 }
 
 /// 0-based MIDI channel of the expression control staff.
-pub const EXPRESSION_CHANNEL: u8 = 6;
+pub const EXPRESSION_CHANNEL: u8 = 0;
 
 /// Highest controllable fret (calibration tables only cover frets 0..=12).
 pub const MAX_FRET: u8 = 12;
@@ -64,6 +64,7 @@ const PLUCK_SWITCH_MS: i64 = 30;
 const EMERGENCY_UNFRET_MS: i64 = 10;
 /// Settle time between `Dampen` and the quiet `Unfret` of a released note.
 const DAMPEN_SETTLE_MS: i64 = 500;
+const UNFRET_QUIET_DURATION_MS: i64 = 550;
 
 /// Fret used to dampen an open string at note-off (lily_conductor convention).
 const OPEN_STRING_DAMPEN_FRET: Fret = Fret::Fret11;
@@ -489,7 +490,10 @@ impl GuitarEngine {
                     no_active_frets += 1;
                 }
                 FretState::Damping => {
-                    self.schedule_unfret(string, fret, event_time, sink);
+                    if fret != Fret::Fret1 {
+                        self.schedule_unfret(string, fret, event_time, sink);
+                    }
+
                     no_active_frets += 1;
                 }
             }
@@ -498,6 +502,7 @@ impl GuitarEngine {
         // if no frets were active, we had an open string -> mute it
         if no_active_frets == 0 {
             self.schedule_mute_sequence(string, Fret::NoFret, event_time, sink);
+            self.schedule_dampen(string, Fret::Fret1, event_time, sink);
         }
     }
 
@@ -516,7 +521,8 @@ impl GuitarEngine {
     fn schedule_unfret(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
         let st = &mut self.states.get_state_mut(string);
         sink.schedule(t, Message::Unfret(string, fret));
-        st.fret_states.set_state(fret, FretState::Releasing(t));
+        st.fret_states
+            .set_state(fret, FretState::Releasing(shifted(t, UNFRET_QUIET_DURATION_MS)));
     }
 }
 
@@ -524,12 +530,12 @@ impl GuitarEngine {
 /// channels.
 fn channel_to_string(channel: u8) -> Option<GuitarString> {
     match channel {
-        0 => Some(GuitarString::e),
-        1 => Some(GuitarString::B),
-        2 => Some(GuitarString::G),
-        3 => Some(GuitarString::D),
-        4 => Some(GuitarString::A),
-        5 => Some(GuitarString::E),
+        1 => Some(GuitarString::e),
+        2 => Some(GuitarString::B),
+        3 => Some(GuitarString::G),
+        4 => Some(GuitarString::D),
+        5 => Some(GuitarString::A),
+        6 => Some(GuitarString::E),
         _ => None,
     }
 }
@@ -581,7 +587,9 @@ mod tests {
 
     const LATENCY_MS: u64 = 250;
 
-    /// Records scheduled commands; `cancel` drops matching pending entries.
+    /// Records scheduled commands, modelling the scheduler's cancellation
+    /// rule: a new message cancels all *later* pending messages for the same
+    /// (string, fret) combination.
     #[derive(Default)]
     struct RecordingSink {
         entries: Vec<(u64, Message)>,
@@ -590,6 +598,12 @@ mod tests {
     impl RecordingSink {
         fn record(&mut self, base: Instant, at: Instant, message: Message) {
             let ms = at.duration_since(base).as_millis() as u64;
+            if let Some(new_sf) = message.get_string_and_fret() {
+                self.entries.retain(|&(t, m)| match m.get_string_and_fret() {
+                    Some(existing_sf) => !(existing_sf == new_sf && t > ms),
+                    None => true,
+                });
+            }
             self.entries.push((ms, message));
         }
 
@@ -668,7 +682,9 @@ mod tests {
         let msgs = f.messages();
         let t = LATENCY_MS;
         // Volume first (uniform 0..=255, velocity 100 -> 200), then fret +
-        // fret1 dampen, then the pluck.
+        // fret1 dampen, then the pluck. At note-off the sounding fret gets the
+        // dampen+settle sequence; the already-damped Fret 1 is released
+        // immediately (idle strings cool down).
         assert_eq!(
             msgs,
             vec![
@@ -676,6 +692,7 @@ mod tests {
                 (t - 60, Message::FretQuiet(e, Fret::Fret5)),
                 (t - 60, Message::Dampen(e, Fret::Fret1)),
                 (t, Message::Pluck(e)),
+                (500 + t, Message::Unfret(e, Fret::Fret1)),
                 (500 + t, Message::Dampen(e, Fret::Fret5)),
                 (500 + t + 500, Message::Unfret(e, Fret::Fret5)),
             ]
@@ -742,9 +759,10 @@ mod tests {
         assert!(msgs.contains(&(t - 60, Message::Dampen(e, Fret::Fret5))));
         assert!(msgs.contains(&(t - 30, Message::PluckTechnique(e, PluckTechnique::Hard))));
         assert!(msgs.contains(&(t, Message::Pluck(e))));
-        // Exactly one dampen (at note-on), release at note-off + settle.
+        // Exactly one dampen (at note-on). The fret is still Damping at
+        // note-off, so it is released immediately, without settle time.
         assert_eq!(f.sink.count(Message::Dampen(e, Fret::Fret5)), 1);
-        assert!(msgs.contains(&(500 + LATENCY_MS + 500, Message::Unfret(e, Fret::Fret5))));
+        assert!(msgs.contains(&(500 + LATENCY_MS, Message::Unfret(e, Fret::Fret5))));
     }
 
     #[test]
@@ -752,13 +770,13 @@ mod tests {
         let mut f = Fixture::new();
         f.on(0, 0, 64 + 5, 100); // fret 5 -> dampens fret 1
         f.off(400, 0, 64 + 5);
-        f.on(500, 0, 64 + 7, 100); // fret 7 -> fret 1 stays damped, no new dampen
-        f.off(900, 0, 64 + 7);
-        f.on(1000, 0, 64, 100); // open string -> release fret 1
+        // The open note comes within Fret 1's 500ms release window, so it must
+        // be emergency-unfretted in time for the pluck.
+        f.on(600, 0, 64, 100);
 
         let msgs = f.messages();
         assert_eq!(f.sink.count(Message::Dampen(e, Fret::Fret1)), 1);
-        let t_open = 1000 + LATENCY_MS;
+        let t_open = 600 + LATENCY_MS;
         assert!(msgs.contains(&(t_open - 10, Message::UnfretFast(e, Fret::Fret1))));
         assert!(msgs.contains(&(t_open, Message::Pluck(e))));
     }

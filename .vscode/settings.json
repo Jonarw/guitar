@@ -13,7 +13,9 @@
         "rs485host/Cargo.toml",
         "fret/Cargo.toml",
         "conductor/Cargo.toml",
-        "lilyparse/Cargo.toml"
+        "lilyparse/Cargo.toml",
+        "lily_conductor/Cargo.toml",
+        "midi_conductor/Cargo.toml"
     ],
     "rust-analyzer.check.command": "clippy"
 }
