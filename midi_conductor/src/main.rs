@@ -13,6 +13,7 @@ mod midi_input;
 mod scheduler;
 
 use std::process::ExitCode;
+use std::sync::mpsc::RecvTimeoutError::{Disconnected, Timeout};
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
@@ -21,8 +22,9 @@ use protocol::{Fret, GuitarString, Message};
 use string_volume::{StringVolumeRange, StringVolumeTable};
 
 use crate::config::Config;
-use crate::engine::GuitarEngine;
-use crate::scheduler::CommandSink;
+use crate::engine::{EXPRESSION_CHANNEL, GuitarEngine};
+use crate::midi_input::EngineEvent;
+use crate::scheduler::{CommandSink, Scheduler};
 
 /// Delay between `Reset`/volumes and `PluckEnable` in the startup prologue.
 const PLUCK_ENABLE_DELAY_MS: u64 = 300;
@@ -71,11 +73,42 @@ fn run() -> Result<(), String> {
     let mut engine = GuitarEngine::new(volume_table, config.latency_ms);
     let mut sink = scheduler;
     eprintln!("Listening (latency {} ms)...", config.latency_ms);
-    for (event_time, event) in rx {
-        engine.handle(event_time, event, &mut sink);
+
+    let mut event_buffer = Vec::new();
+    let mut current_event_time = None;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(5)) {
+            Ok((event_time, event)) => {
+                if let Some(some_event_time) = current_event_time
+                    && some_event_time != event_time
+                {
+                    drain_event_buffer(&mut event_buffer, &mut engine, &mut sink);
+                }
+
+                current_event_time = Some(event_time);
+                event_buffer.push((event_time, event));
+            }
+            Err(Timeout) => {
+                drain_event_buffer(&mut event_buffer, &mut engine, &mut sink);
+                current_event_time = None;
+            }
+            Err(Disconnected) => {
+                break;
+            }
+        }
     }
 
     Ok(())
+}
+
+fn drain_event_buffer(buffer: &mut Vec<(Instant, EngineEvent)>, engine: &mut GuitarEngine, sink: &mut Scheduler) {
+    // sort buffer: first note events, then expression events
+    buffer.sort_unstable_by_key(|(_, event)| event.channel() == EXPRESSION_CHANNEL);
+
+    // drain buffer in reverse -> handle expression events first
+    for (event_time, event) in buffer.drain(..).rev() {
+        engine.handle(event_time, event, sink);
+    }
 }
 
 fn load_volume_table(config: &Config, config_dir: &std::path::Path) -> StringVolumeTable {

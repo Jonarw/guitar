@@ -15,6 +15,16 @@ pub enum EngineEvent {
     AllNotesOff { channel: u8 },
 }
 
+impl EngineEvent {
+    pub fn channel(&self) -> u8 {
+        match self {
+            EngineEvent::NoteOn { channel, .. }
+            | EngineEvent::NoteOff { channel, .. }
+            | EngineEvent::AllNotesOff { channel } => *channel,
+        }
+    }
+}
+
 struct CallbackState {
     /// Local clock anchor for converting midir timestamps to `Instant`s.
     base_instant: Instant,
