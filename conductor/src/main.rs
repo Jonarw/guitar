@@ -231,12 +231,6 @@ fn parse_action(action: &str, args: &[&str], line_no: usize) -> Result<Message> 
             let fret = parse_fret(args[1], line_no)?;
             Ok(Message::FretQuiet(string, fret))
         }
-        "fret_adaptive" => {
-            ensure_len(args, 2, line_no, action)?;
-            let string = parse_guitar_string(args[0], line_no)?;
-            let fret = parse_fret(args[1], line_no)?;
-            Ok(Message::FretAdaptive(string, fret))
-        }
         "unfret" => {
             ensure_len(args, 2, line_no, action)?;
             let string = parse_guitar_string(args[0], line_no)?;

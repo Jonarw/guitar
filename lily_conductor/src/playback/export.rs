@@ -35,7 +35,6 @@ fn format_action(message: &Message) -> Result<String, String> {
         Message::PluckDisable(s) => format!("pluck_disable {}", string_name(*s)),
         Message::FretFast(s, f) => format!("fret_fast {} {}", string_name(*s), fret_number(*f)),
         Message::FretQuiet(s, f) => format!("fret_quiet {} {}", string_name(*s), fret_number(*f)),
-        Message::FretAdaptive(s, f) => format!("fret_adaptive {} {}", string_name(*s), fret_number(*f)),
         Message::Unfret(s, f) => format!("unfret {} {}", string_name(*s), fret_number(*f)),
         Message::UnfretFast(s, f) => format!("unfret_fast {} {}", string_name(*s), fret_number(*f)),
         Message::Dampen(s, f) => format!("dampen {} {}", string_name(*s), fret_number(*f)),

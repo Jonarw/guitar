@@ -75,15 +75,10 @@ fn parse_command(line: &str) -> Result<Message, String> {
             let (string, fret) = parse_string_and_fret(rest)?;
             Ok(Message::FretQuiet(string, fret))
         }
-        'A' | 'a' => {
-            let (string, fret) = parse_string_and_fret(rest)?;
-            Ok(Message::FretAdaptive(string, fret))
-        }
         'C' | 'c' => {
             let (string, fret) = parse_string_and_fret(rest)?;
             Ok(Message::FretCalibration(string, fret))
         }
-        'O' | 'o' => parse_config_command(rest),
         'P' | 'p' => {
             let string = parse_string_only(rest)?;
             Ok(Message::Pluck(string))
@@ -125,42 +120,6 @@ fn parse_command(line: &str) -> Result<Message, String> {
             command
         )),
     }
-}
-
-fn parse_config_command(rest: &str) -> Result<Message, String> {
-    if rest.is_empty() {
-        return Err("missing config payload; expected O[fret].[id].[value]".to_string());
-    }
-
-    let mut parts = rest.split('.');
-
-    let fret_str = parts.next().ok_or_else(|| "missing fret; expected 1-18".to_string())?;
-    let id_str = parts
-        .next()
-        .ok_or_else(|| "missing config id; expected 1-15".to_string())?;
-    let value_str = parts
-        .next()
-        .ok_or_else(|| "missing config value; expected u8 or u16".to_string())?;
-
-    if parts.next().is_some() {
-        return Err("too many fields; expected O[fret].[id].[value]".to_string());
-    }
-
-    if fret_str.is_empty() || id_str.is_empty() || value_str.is_empty() {
-        return Err("invalid config payload; expected O[fret].[id].[value]".to_string());
-    }
-
-    let fret_number = fret_str
-        .parse::<u8>()
-        .map_err(|_| "invalid fret; expected 1-18".to_string())?;
-    let fret = parse_fret(fret_number)?;
-
-    let config_id = id_str
-        .parse::<u8>()
-        .map_err(|_| "invalid config id; expected 1-15".to_string())?;
-
-    let config_value = parse_config_value(config_id, value_str)?;
-    Ok(Message::Config(fret, config_value))
 }
 
 fn parse_percentage(value: &str) -> Result<Percentage, String> {

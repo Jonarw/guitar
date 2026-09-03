@@ -14,7 +14,33 @@ use {defmt_rtt as _, panic_probe as _};
 
 pub mod hw;
 
-pub static MY_FRET: Fret = Fret::Fret1;
+#[cfg(feature = "fret1")]
+pub const MY_FRET: Fret = Fret::Fret1;
+#[cfg(feature = "fret2")]
+pub const MY_FRET: Fret = Fret::Fret2;
+#[cfg(feature = "fret3")]
+pub const MY_FRET: Fret = Fret::Fret3;
+#[cfg(feature = "fret4")]
+pub const MY_FRET: Fret = Fret::Fret4;
+#[cfg(feature = "fret5")]
+pub const MY_FRET: Fret = Fret::Fret5;
+#[cfg(feature = "fret6")]
+pub const MY_FRET: Fret = Fret::Fret6;
+#[cfg(feature = "fret7")]
+pub const MY_FRET: Fret = Fret::Fret7;
+#[cfg(feature = "fret8")]
+pub const MY_FRET: Fret = Fret::Fret8;
+#[cfg(feature = "fret9")]
+pub const MY_FRET: Fret = Fret::Fret9;
+#[cfg(feature = "fret10")]
+pub const MY_FRET: Fret = Fret::Fret10;
+#[cfg(feature = "fret11")]
+pub const MY_FRET: Fret = Fret::Fret11;
+#[cfg(feature = "fret12")]
+pub const MY_FRET: Fret = Fret::Fret12;
+#[cfg(feature = "fret13")]
+pub const MY_FRET: Fret = Fret::Fret13;
+
 type FretSignal = Signal<ThreadModeRawMutex, Message>;
 
 static FRET_SIGNALS: [FretSignal; 6] = [
@@ -31,6 +57,8 @@ const PWM_HOLD_FORCE: Percentage = Percentage::new(45);
 const PWM_MAX_FORCE: Percentage = Percentage::new(100);
 const RELEASE_BREAK_OFF_MS: u64 = 1;
 
+// this is not an actual error, we just use Result<(), Interrupted> as a convenient way to abort the current
+// operation when we are interrupted
 struct Interrupted {}
 
 async fn wait_interruptible(duration: Duration, signal: &'static FretSignal) -> Result<(), Interrupted> {
@@ -252,10 +280,6 @@ async fn string_task(mut pwm: GuitarStringPwm, signal: &'static FretSignal) {
                 let _ = fret_calibration(&mut pwm, state, signal).await;
                 state = FretState::Idle;
             }
-            Message::FretAdaptive(_, _) => {
-                let _ = fret_quiet(&mut pwm, state, signal).await;
-                state = FretState::Fretting;
-            }
             _ => {}
         }
     }
@@ -270,41 +294,69 @@ async fn send_confirm_presence(rs485: &mut Rs485) {
     }
 }
 
-fn get_fret_signal(string: GuitarString) -> &'static FretSignal {
-    match string {
-        GuitarString::E => &FRET_SIGNALS[5],
-        GuitarString::A => &FRET_SIGNALS[0],
-        GuitarString::D => &FRET_SIGNALS[4],
-        GuitarString::G => &FRET_SIGNALS[1],
-        GuitarString::B => &FRET_SIGNALS[3],
-        GuitarString::e => &FRET_SIGNALS[2],
+fn get_fret_signal(fret: Fret, string: GuitarString) -> &'static FretSignal {
+    if MY_FRET == Fret::Fret13 {
+        match fret {
+            Fret::Fret13 => &FRET_SIGNALS[5],
+            Fret::Fret14 => &FRET_SIGNALS[4],
+            Fret::Fret15 => &FRET_SIGNALS[3],
+            Fret::Fret16 => &FRET_SIGNALS[2],
+            Fret::Fret17 => &FRET_SIGNALS[1],
+            Fret::Fret18 => &FRET_SIGNALS[0],
+            _ => defmt::panic!("Invalid Fret"),
+        }
+    } else {
+        match string {
+            GuitarString::E => &FRET_SIGNALS[5],
+            GuitarString::A => &FRET_SIGNALS[0],
+            GuitarString::D => &FRET_SIGNALS[4],
+            GuitarString::G => &FRET_SIGNALS[1],
+            GuitarString::B => &FRET_SIGNALS[3],
+            GuitarString::e => &FRET_SIGNALS[2],
+        }
+    }
+}
+
+fn is_message_relevant(message: &Message) -> bool {
+    if *message == Message::Reset {
+        return true;
+    }
+
+    if MY_FRET == Fret::Fret13 {
+        message.get_string() == Some(GuitarString::e)
+            && message.get_fret().is_some_and(|fret| {
+                matches!(
+                    fret,
+                    Fret::Fret13 | Fret::Fret14 | Fret::Fret15 | Fret::Fret16 | Fret::Fret17 | Fret::Fret18
+                )
+            })
+    } else {
+        message.get_fret().is_some_and(|fret| fret == MY_FRET)
     }
 }
 
 async fn process_message(message: &Message, rs485: &mut Rs485) {
     defmt::info!("Incoming Message: {}", message);
 
-    if !matches!(message, Message::Reset) && message.get_fret() != Some(MY_FRET) {
+    if !is_message_relevant(message) {
         return;
     }
 
     match message {
         Message::FretPresence(_) => send_confirm_presence(rs485).await,
-        Message::FretFast(guitar_string, _)
-        | Message::FretQuiet(guitar_string, _)
-        | Message::Unfret(guitar_string, _)
-        | Message::UnfretFast(guitar_string, _)
-        | Message::Dampen(guitar_string, _)
-        | Message::FretAdaptive(guitar_string, _)
-        | Message::FretCalibration(guitar_string, _) => {
-            get_fret_signal(*guitar_string).signal(*message);
+        Message::FretFast(guitar_string, fret)
+        | Message::FretQuiet(guitar_string, fret)
+        | Message::Unfret(guitar_string, fret)
+        | Message::UnfretFast(guitar_string, fret)
+        | Message::Dampen(guitar_string, fret)
+        | Message::FretCalibration(guitar_string, fret) => {
+            get_fret_signal(*fret, *guitar_string).signal(*message);
         }
         Message::Reset => {
             for signal in FRET_SIGNALS.iter() {
                 signal.signal(*message);
             }
         }
-        Message::Config(_, _) => {}
         _ => {}
     }
 }

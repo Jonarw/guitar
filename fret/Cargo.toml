@@ -49,6 +49,22 @@ portable-atomic = { version = "1", default-features = false, features = [
 ] }
 protocol = { path = "../protocol" }
 
+[features]
+default = ["fret1"]
+fret1 = []
+fret2 = []
+fret3 = []
+fret4 = []
+fret5 = []
+fret6 = []
+fret7 = []
+fret8 = []
+fret9 = []
+fret10 = []
+fret11 = []
+fret12 = []
+fret13 = []
+
 [profile.release]
 debug = 2
 lto = 'fat'

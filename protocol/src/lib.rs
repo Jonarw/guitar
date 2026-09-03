@@ -21,12 +21,10 @@ pub enum Message {
     PluckDisable(GuitarString),
     FretFast(GuitarString, Fret),
     FretQuiet(GuitarString, Fret),
-    FretAdaptive(GuitarString, Fret),
     Unfret(GuitarString, Fret),
     UnfretFast(GuitarString, Fret),
     Dampen(GuitarString, Fret),
     FretCalibration(GuitarString, Fret),
-    Config(Fret, ConfigValue),
     Reset,
     PluckSpeed(GuitarString, u16),
     PluckTechnique(GuitarString, PluckTechnique),
@@ -41,9 +39,7 @@ impl Message {
             | Message::Unfret(_, fret)
             | Message::UnfretFast(_, fret)
             | Message::Dampen(_, fret)
-            | Message::FretAdaptive(_, fret)
-            | Message::FretCalibration(_, fret)
-            | Message::Config(fret, _) => Some(*fret),
+            | Message::FretCalibration(_, fret) => Some(*fret),
             _ => None,
         }
     }
@@ -59,7 +55,6 @@ impl Message {
             | Message::PluckDisable(guitar_string)
             | Message::FretFast(guitar_string, _)
             | Message::FretQuiet(guitar_string, _)
-            | Message::FretAdaptive(guitar_string, _)
             | Message::Unfret(guitar_string, _)
             | Message::UnfretFast(guitar_string, _)
             | Message::Dampen(guitar_string, _)
@@ -72,7 +67,6 @@ impl Message {
         match self {
             Message::FretFast(guitar_string, fret)
             | Message::FretQuiet(guitar_string, fret)
-            | Message::FretAdaptive(guitar_string, fret)
             | Message::Unfret(guitar_string, fret)
             | Message::UnfretFast(guitar_string, fret)
             | Message::Dampen(guitar_string, fret)
