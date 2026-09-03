@@ -15,7 +15,8 @@
         "conductor/Cargo.toml",
         "lilyparse/Cargo.toml",
         "lily_conductor/Cargo.toml",
-        "midi_conductor/Cargo.toml"
+        "midi_conductor/Cargo.toml",
+        "pluck_calibration/Cargo.toml"
     ],
     "rust-analyzer.check.command": "clippy"
 }

@@ -8,7 +8,7 @@ use embassy_rp::{
     },
     peripherals::UART1,
     pwm::{self, Pwm, PwmOutput},
-    uart::{self, BufferedUart, Uart},
+    uart::{self, BufferedUart},
 };
 
 use fixed::traits::ToFixed;

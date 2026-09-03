@@ -450,6 +450,7 @@ name = "string_volume"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "enum-iterator",
  "protocol",
 ]
 

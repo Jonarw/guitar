@@ -34,7 +34,11 @@ impl ChannelSignals {
 }
 
 static SIGNALS: [ChannelSignals; 3] = [ChannelSignals::new(), ChannelSignals::new(), ChannelSignals::new()];
-static VARIANT: Variant = Variant::Right;
+
+#[cfg(feature = "left")]
+pub const VARIANT: Variant = Variant::Left;
+#[cfg(feature = "right")]
+pub const VARIANT: Variant = Variant::Right;
 
 #[derive(Clone, Copy)]
 pub enum Variant {

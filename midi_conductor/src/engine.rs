@@ -2,12 +2,13 @@
 //! protocol commands, tracking per-string state (current expression, sounding
 //! note, held/dampened frets, pending unfrets).
 
+use std::iter::repeat_n;
 use std::time::{Duration, Instant};
 
 use enum_iterator::{all, cardinality};
 use midly::num::u7;
 use protocol::{Fret, GuitarString, Message, PluckTechnique};
-use string_volume::{MidiVolume, StringVolumeTable};
+use string_volume::{MidiVolume, StringVolumeTable, get_number_of_frets};
 
 use crate::midi_input::EngineEvent;
 use crate::scheduler::CommandSink;
@@ -43,9 +44,6 @@ pub fn get_base_pitch(string: GuitarString) -> MidiPitch {
 
 /// 0-based MIDI channel of the expression control staff.
 pub const EXPRESSION_CHANNEL: u8 = 0;
-
-/// Highest controllable fret (calibration tables only cover frets 0..=12).
-pub const MAX_FRET: u8 = 12;
 
 // ---------------------------------------------------------------------------
 // Timing constants (milliseconds, relative to the pluck/slam time)
@@ -93,15 +91,15 @@ enum FretState {
     Releasing(Instant),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 struct FretStates {
-    fret_states: [FretState; MAX_FRET as usize + 1],
+    fret_states: Vec<FretState>,
 }
 
 impl FretStates {
-    pub fn new() -> Self {
+    pub fn new(string: GuitarString) -> Self {
         Self {
-            fret_states: [FretState::Idle; _],
+            fret_states: repeat_n(FretState::Idle, get_number_of_frets(string)).collect(),
         }
     }
 
@@ -160,7 +158,7 @@ impl StringState {
     pub fn new(string: GuitarString) -> Self {
         Self {
             expression: Expression::default(),
-            fret_states: FretStates::new(),
+            fret_states: FretStates::new(string),
             last_technique: PluckTechnique::Soft,
             last_volume: None,
             last_pluck: None,

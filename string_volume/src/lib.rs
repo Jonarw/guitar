@@ -4,9 +4,10 @@
 //! (`lily_conductor`) and the real-time MIDI (`midi_conductor`) playback
 //! engines map dynamics to hardware pluck volumes the same way.
 
-use std::path::Path;
+use std::{iter::repeat_n, path::Path};
 
 use anyhow::{Context, bail};
+use enum_iterator::all;
 use protocol::{Fret, GuitarString, PluckTechnique};
 
 /// MIDI note velocity in range `0..=127`.
@@ -35,7 +36,12 @@ pub struct StringVolumeRange {
     pub max: i32,
 }
 
-const NUMBER_OF_ENTRIES: usize = 13;
+pub fn get_number_of_frets(string: GuitarString) -> usize {
+    match string {
+        GuitarString::e => 18,
+        _ => 12,
+    }
+}
 
 impl StringVolumeRange {
     /// Maps MIDI volume (`0..=127`) into this string's calibrated pluck-volume range.
@@ -53,23 +59,25 @@ impl StringVolumeRange {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct StringTable {
-    ranges: [StringVolumeRange; NUMBER_OF_ENTRIES],
+    ranges: Vec<StringVolumeRange>,
     hard_offset: i32,
     hysteresis: i32,
     last_requested_volume: i32,
     last_returned_value: i32,
+    string: GuitarString,
 }
 
 impl StringTable {
-    pub fn uniform(range: StringVolumeRange) -> Self {
+    pub fn uniform(range: StringVolumeRange, string: GuitarString) -> Self {
         Self {
-            ranges: [range; _],
+            ranges: repeat_n(range, get_number_of_frets(string) + 1).collect(),
             hard_offset: 0,
             hysteresis: 0,
             last_requested_volume: i32::MIN,
             last_returned_value: 0,
+            string,
         }
     }
 
@@ -130,13 +138,21 @@ impl StringVolumeTable {
         technique: PluckTechnique,
         volume: MidiVolume,
     ) -> u8 {
-        self.tables[string as usize].map_midi_volume(fret, technique, volume)
+        self.tables
+            .iter_mut()
+            .find(|t| t.string == string)
+            .expect("String should exist")
+            .map_midi_volume(fret, technique, volume)
     }
 
     /// Constructs a table where every (string, fret) cell has the same range.
     pub fn uniform(range: StringVolumeRange) -> Self {
+        let tables: Vec<StringTable> = all::<GuitarString>()
+            .map(|string| StringTable::uniform(range, string))
+            .collect();
+
         Self {
-            tables: [StringTable::uniform(range); 6],
+            tables: tables.try_into().expect("GuitarString has exactly 6 variants"),
         }
     }
 
@@ -161,8 +177,8 @@ impl StringVolumeTable {
 
         let mut i_line = 1;
         for (i_string, table) in ret.tables.iter_mut().enumerate() {
-            let mut raw_data = [(0i32, 0i32, 0i32, 0i32); NUMBER_OF_ENTRIES];
-            for data in raw_data.iter_mut() {
+            let mut raw_data = Vec::<(i32, i32, i32, i32)>::new();
+            for _ in 0..table.ranges.len() {
                 let line = lines[i_line];
                 let cols: Vec<&str> = line.splitn(6, ',').collect();
 
@@ -178,27 +194,26 @@ impl StringVolumeTable {
                     );
                 }
 
-                *data = (cols[2].parse()?, cols[3].parse()?, cols[4].parse()?, cols[5].parse()?);
+                raw_data.push((cols[2].parse()?, cols[3].parse()?, cols[4].parse()?, cols[5].parse()?));
 
                 i_line += 1;
             }
 
+            let n = raw_data.len() as i32;
             let up_sum: i32 = raw_data.iter().map(|d| d.0 + d.1).sum();
             let down_sum: i32 = raw_data.iter().map(|d| d.2 + d.3).sum();
-            let hysteresis = (up_sum - down_sum) / (NUMBER_OF_ENTRIES as i32 * 2);
+            let hysteresis = (up_sum - down_sum) / (n * 2);
 
             let soft_sum: i32 = raw_data.iter().map(|d| d.0 + d.2).sum();
             let hard_sum: i32 = raw_data.iter().map(|d| d.1 + d.3).sum();
 
-            let hard_offset = (hard_sum - soft_sum) / (NUMBER_OF_ENTRIES as i32 * 2);
+            let hard_offset = (hard_sum - soft_sum) / (n * 2);
 
             table.hard_offset = hard_offset;
             table.hysteresis = hysteresis;
 
-            let span_top = raw_data[NUMBER_OF_ENTRIES - 1].0
-                + raw_data[NUMBER_OF_ENTRIES - 1].1
-                + raw_data[NUMBER_OF_ENTRIES - 1].2
-                + raw_data[NUMBER_OF_ENTRIES - 1].3;
+            let n = n as usize;
+            let span_top = raw_data[n - 1].0 + raw_data[n - 1].1 + raw_data[n - 1].2 + raw_data[n - 1].3;
             let span_bottom = raw_data[0].0 + raw_data[0].1 + raw_data[0].2 + raw_data[0].3;
 
             let span = (span_top - span_bottom) * 2 / 4;

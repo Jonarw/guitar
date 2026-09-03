@@ -82,13 +82,16 @@ fn run() -> Result<(), String> {
                 if let Some(some_event_time) = current_event_time
                     && some_event_time != event_time
                 {
+                    // received event has a newer timestamp than the previous event -> process pending events
                     drain_event_buffer(&mut event_buffer, &mut engine, &mut sink);
                 }
 
+                // accumulate all events with the same timestamp in the buffer before sending them
                 current_event_time = Some(event_time);
                 event_buffer.push((event_time, event));
             }
             Err(Timeout) => {
+                // no event received in 5ms -> process pending events
                 drain_event_buffer(&mut event_buffer, &mut engine, &mut sink);
                 current_event_time = None;
             }

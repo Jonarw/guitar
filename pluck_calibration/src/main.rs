@@ -1,8 +1,8 @@
+use std::env;
 use std::io::Write;
-use std::process::{Command, Output};
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
-use std::{env, io};
 
 use alsa::pcm::{Access, Format, HwParams, PCM};
 use alsa::{Direction, ValueOr};
@@ -31,7 +31,6 @@ const TIME_PER_STEP_MS: u64 = 250;
 const SAMPLE_RATE: u32 = 48_000;
 /// Time to hold the fret servo before plucking (milliseconds).
 const FRET_PREP_MS: u64 = 2000;
-const POST_COARSE_MS: u64 = 2000;
 const VOLUME_PREP_MS: u64 = 250;
 /// Pause between consecutive tests on the same string (milliseconds).
 const BETWEEN_STEPS_MS: u64 = 200;
@@ -48,7 +47,7 @@ const STRING_CONFIGS: [(GuitarString, &str, u8); 6] = [
     (GuitarString::D, "D", 12),
     (GuitarString::G, "G", 12),
     (GuitarString::B, "B", 12),
-    (GuitarString::e, "e", 12),
+    (GuitarString::e, "e", 18),
 ];
 
 const ALL_FRETS: [Fret; 19] = [

@@ -46,6 +46,10 @@ cobs = { version = "0.5", features = ["defmt"], default-features = false }
 num_enum = { version = "0.7", default-features = false }
 protocol = { path = "../protocol" }
 
+[features]
+default = ["left"]
+left = []
+right = []
 
 [profile.release]
 debug = 2

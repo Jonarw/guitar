@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 protocol = { path = "../protocol" }
 anyhow = "1"
+enum-iterator = "2"
