@@ -79,15 +79,19 @@ fn run() -> Result<(), String> {
     loop {
         match rx.recv_timeout(Duration::from_millis(5)) {
             Ok((event_time, event)) => {
-                if let Some(some_event_time) = current_event_time
-                    && some_event_time != event_time
-                {
-                    // received event has a newer timestamp than the previous event -> process pending events
-                    drain_event_buffer(&mut event_buffer, &mut engine, &mut sink);
+                // We did receive an event within 5ms.
+                // We accumulate all events that have timestamps within 1ms and collect them in the event buffer.
+                // Once we encounter an event that is not within 1ms from the first event in the event buffer, we drain the buffer.
+                // drain_event_buffer reorders events such that events on EXPRESSION_CHANNEL are handled before other events.
+                if let Some(some_event_time) = current_event_time {
+                    if event_time - some_event_time > Duration::from_millis(1) {
+                        drain_event_buffer(&mut event_buffer, &mut engine, &mut sink);
+                        current_event_time = Some(event_time);
+                    }
+                } else {
+                    current_event_time = Some(event_time);
                 }
 
-                // accumulate all events with the same timestamp in the buffer before sending them
-                current_event_time = Some(event_time);
                 event_buffer.push((event_time, event));
             }
             Err(Timeout) => {
@@ -106,10 +110,11 @@ fn run() -> Result<(), String> {
 
 fn drain_event_buffer(buffer: &mut Vec<(Instant, EngineEvent)>, engine: &mut GuitarEngine, sink: &mut Scheduler) {
     // sort buffer: first note events, then expression events
-    buffer.sort_unstable_by_key(|(_, event)| event.channel() == EXPRESSION_CHANNEL);
+    // use stable sort to keep ordering between events on the same string consistent
+    buffer.sort_by_key(|(_, event)| event.channel() != EXPRESSION_CHANNEL);
 
     // drain buffer in reverse -> handle expression events first
-    for (event_time, event) in buffer.drain(..).rev() {
+    for (event_time, event) in buffer.drain(..) {
         engine.handle(event_time, event, sink);
     }
 }
