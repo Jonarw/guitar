@@ -47,6 +47,21 @@
                 "RUST_LOG": "info"
             },
             "consoleLogLevel": "Debug"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug midi_conductor",
+            "cargo": {
+                "args": [
+                    "build",
+                ],
+                "cwd": "${workspaceFolder}/midi_conductor"
+            },
+            "cwd": "${workspaceFolder}/midi_conductor",
+            "env": {
+                "RUST_LOG": "info"
+            }
         }
     ]
 }
