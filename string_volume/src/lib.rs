@@ -47,7 +47,11 @@ impl StringVolumeRange {
     /// Maps MIDI volume (`0..=127`) into this string's calibrated pluck-volume range.
     pub fn map_midi_volume(&self, volume: MidiVolume) -> i32 {
         let span = self.max - self.min;
-        self.min + i32::from(volume.volume) * span / i32::from(MidiVolume::MAX_VALUE)
+        // MuseScore emits velocity=16 for ppp, which we define to be the minimum volume we can play
+        self.min
+            + i32::from(volume.volume.saturating_sub(16)) * span * 128
+                / i32::from(MidiVolume::MAX_VALUE)
+                / (128 - 16 - 16)
     }
 
     pub fn neutral() -> Self {
@@ -212,8 +216,11 @@ impl StringVolumeTable {
             table.hard_offset = hard_offset;
             table.hysteresis = hysteresis;
 
-            let n = n as usize;
-            let span_top = raw_data[n - 1].0 + raw_data[n - 1].1 + raw_data[n - 1].2 + raw_data[n - 1].3;
+            // we arbitrarily define that the overall range (difference between loudest and softest note)
+            // is equal to the range between Fret10 and NoFret (value experimentally determined)
+            // this has the nice side effect that it automatically compensates for servo sensitivity,
+            // mechanical leverage etc.
+            let span_top = raw_data[10].0 + raw_data[10].1 + raw_data[10].2 + raw_data[10].3;
             let span_bottom = raw_data[0].0 + raw_data[0].1 + raw_data[0].2 + raw_data[0].3;
 
             let span = (span_top - span_bottom) * 2 / 4;
