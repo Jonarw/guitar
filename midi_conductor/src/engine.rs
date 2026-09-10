@@ -99,7 +99,7 @@ struct FretStates {
 impl FretStates {
     pub fn new(string: GuitarString) -> Self {
         Self {
-            fret_states: repeat_n(FretState::Idle, get_number_of_frets(string)).collect(),
+            fret_states: repeat_n(FretState::Idle, get_number_of_frets(string) + 1).collect(),
         }
     }
 
