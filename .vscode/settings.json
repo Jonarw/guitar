@@ -10,9 +10,9 @@
     "rust-analyzer.linkedProjects": [
         "pluck/Cargo.toml",
         "protocol/Cargo.toml",
-        "rs485host/Cargo.toml",
+        "manual_conductor/Cargo.toml",
         "fret/Cargo.toml",
-        "conductor/Cargo.toml",
+        "txt_conductor/Cargo.toml",
         "lilyparse/Cargo.toml",
         "lily_conductor/Cargo.toml",
         "midi_conductor/Cargo.toml",

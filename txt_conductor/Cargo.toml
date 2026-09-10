@@ -1,5 +1,5 @@
 [package]
-name = "guitar_conductor"
+name = "txt_conductor"
 version = "0.1.0"
 edition = "2024"
 

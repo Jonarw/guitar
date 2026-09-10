@@ -1,5 +1,5 @@
 use clap::Parser;
-use protocol::{ConfigValue, Fret, GuitarString, Message, Percentage, PluckTechnique};
+use protocol::{Fret, GuitarString, Message, PluckTechnique};
 use std::io::{self, Write};
 use std::time::Duration as StdDuration;
 
@@ -119,45 +119,6 @@ fn parse_command(line: &str) -> Result<Message, String> {
             "unknown command '{}'; expected F, f, A, C, c, P, D, R, V, E, I, S, T or O",
             command
         )),
-    }
-}
-
-fn parse_percentage(value: &str) -> Result<Percentage, String> {
-    let parsed = value
-        .parse::<u8>()
-        .map_err(|_| "invalid percentage; expected 0-100".to_string())?;
-    if parsed > 100 {
-        return Err("invalid percentage; expected 0-100".to_string());
-    }
-
-    Ok(Percentage::new(parsed))
-}
-
-fn parse_duration_ms(value: &str) -> Result<protocol::Duration, String> {
-    let parsed = value
-        .parse::<u16>()
-        .map_err(|_| "invalid duration; expected 0-65535 ms".to_string())?;
-    Ok(protocol::Duration::new(parsed))
-}
-
-fn parse_config_value(config_id: u8, value_str: &str) -> Result<ConfigValue, String> {
-    match config_id {
-        1 => Ok(ConfigValue::MaxForce(parse_percentage(value_str)?)),
-        2 => Ok(ConfigValue::HoldForce(parse_percentage(value_str)?)),
-        3 => Ok(ConfigValue::DampenForce(parse_percentage(value_str)?)),
-        4 => Ok(ConfigValue::MarginalForce(parse_percentage(value_str)?)),
-        5 => Ok(ConfigValue::ReleaseDuration(parse_duration_ms(value_str)?)),
-        6 => Ok(ConfigValue::DampenToFretRampDuration(parse_duration_ms(value_str)?)),
-        7 => Ok(ConfigValue::FretFastMaxForceDuration(parse_duration_ms(value_str)?)),
-        8 => Ok(ConfigValue::FretQuietPhase1Duration(parse_duration_ms(value_str)?)),
-        9 => Ok(ConfigValue::FretQuietPhase2Duration(parse_duration_ms(value_str)?)),
-        10 => Ok(ConfigValue::FretAdaptivePhase1Duration(parse_duration_ms(value_str)?)),
-        11 => Ok(ConfigValue::FretAdaptivePhase2Duration(parse_duration_ms(value_str)?)),
-        12 => Ok(ConfigValue::FretAdaptivePhase3Durtaion(parse_duration_ms(value_str)?)),
-        13 => Ok(ConfigValue::FretAdaptivePhase1Force(parse_percentage(value_str)?)),
-        14 => Ok(ConfigValue::FretAdaptivePhase2Force(parse_percentage(value_str)?)),
-        15 => Ok(ConfigValue::FretAdaptivePhase3Force(parse_percentage(value_str)?)),
-        _ => Err(format!("invalid config id {}; expected 1-15", config_id)),
     }
 }
 
