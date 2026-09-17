@@ -48,10 +48,7 @@ impl StringVolumeRange {
     pub fn map_midi_volume(&self, volume: MidiVolume) -> i32 {
         let span = self.max - self.min;
         // MuseScore emits velocity=16 for ppp, which we define to be the minimum volume we can play
-        self.min
-            + i32::from(volume.volume.saturating_sub(16)) * span * 128
-                / i32::from(MidiVolume::MAX_VALUE)
-                / (128 - 16 - 16)
+        self.min + i32::from(volume.volume.saturating_sub(16)) * span / i32::from(MidiVolume::MAX_VALUE)
     }
 
     pub fn neutral() -> Self {

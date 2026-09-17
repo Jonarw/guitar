@@ -42,15 +42,21 @@ pub fn get_base_pitch(string: GuitarString) -> MidiPitch {
     }
 }
 
-/// 0-based MIDI channel of the expression control staff.
-pub const EXPRESSION_CHANNEL: u8 = 0;
+pub const META_BASE_NOTE: u8 = 52;
+pub const META_NOTE: u8 = META_BASE_NOTE + 1;
+pub const META_SLUR_START: u8 = META_NOTE + 1;
+pub const META_SLUR_END: u8 = META_SLUR_START + 1;
+pub const META_EXPRESSION_SOFT: u8 = META_SLUR_END + 1;
+pub const META_EXPRESSION_HARD: u8 = META_EXPRESSION_SOFT + 1;
+pub const META_EXPRESSION_SLAM: u8 = META_EXPRESSION_SOFT + 2;
+pub const META_EXPRESSION_DAMP: u8 = META_EXPRESSION_SOFT + 3;
 
 // ---------------------------------------------------------------------------
 // Timing constants (milliseconds, relative to the pluck/slam time)
 // ---------------------------------------------------------------------------
 
 /// Lead time for `FretQuiet` before a pluck.
-const FRET_QUIET_PREP_MS: i64 = 60;
+const FRET_QUIET_PREP_MS: i64 = 50;
 /// Lead time for `FretFast` before a finger slam.
 const FRET_FAST_PREP_MS: i64 = 20;
 /// Lead time for `PluckVolume` (servo settling). If the previous pluck was
@@ -141,6 +147,7 @@ struct StringState {
     last_technique: PluckTechnique,
     last_volume: Option<u8>,
     last_pluck: Option<Instant>,
+    slur_active: bool,
     string: GuitarString,
 }
 
@@ -162,6 +169,7 @@ impl StringState {
             last_technique: PluckTechnique::Soft,
             last_volume: None,
             last_pluck: None,
+            slur_active: false,
             string,
         }
     }
@@ -238,39 +246,26 @@ impl GuitarEngine {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Expression staff
-    // -----------------------------------------------------------------------
+    fn meta_note_on(&mut self, channel: u8, key: u8) {
+        let Some(string) = channel_to_string(channel - cardinality::<GuitarString>() as u8) else {
+            return;
+        };
 
-    /// Expression control notes: pitch = open-string base + offset, where
-    /// 0 = soft, 1 = hard, 2 = finger slam, 3 = hard+dampen. Durations are
-    /// ignored; the expression persists until the next control note.
-    fn expression_change(&mut self, key: u8) {
-        for string in all::<GuitarString>() {
-            let base = get_base_pitch(string).as_u8();
-            if key >= base && key - base <= 3 {
-                let expression = match key - base {
-                    0 => Expression::Soft,
-                    1 => Expression::Hard,
-                    2 => Expression::FingerSlam,
-                    _ => Expression::HardDampen,
-                };
-
-                self.states.get_state_mut(string).expression = expression;
-                eprintln!("Expression {string:?} -> {expression:?}");
-                return;
-            }
+        let state = self.states.get_state_mut(string);
+        match key {
+            META_EXPRESSION_SOFT => state.expression = Expression::Soft,
+            META_EXPRESSION_HARD => state.expression = Expression::Hard,
+            META_EXPRESSION_DAMP => state.expression = Expression::HardDampen,
+            META_EXPRESSION_SLAM => state.expression = Expression::FingerSlam,
+            META_SLUR_START => state.slur_active = true,
+            META_SLUR_END => state.slur_active = false,
+            _ => {}
         }
-        eprintln!("Ignoring out-of-range expression note (key {key}).");
     }
 
-    // -----------------------------------------------------------------------
-    // Note on
-    // -----------------------------------------------------------------------
-
     fn note_on(&mut self, event_time: Instant, channel: u8, key: u8, velocity: u8, sink: &mut dyn CommandSink) {
-        if channel == EXPRESSION_CHANNEL {
-            self.expression_change(key);
+        if channel as usize >= cardinality::<GuitarString>() {
+            self.meta_note_on(channel, key);
             return;
         }
 
@@ -297,14 +292,25 @@ impl GuitarEngine {
             }
         }
 
-        // --- Expression-specific handling -------------------------------------
-        // Any still-sounding note on this string is implicitly ended by the
-        // release loop above (same/higher old frets may stay pressed).
-        match string_state.expression {
-            Expression::Soft => self.plucked_note(string, fret, velocity, PluckTechnique::Soft, event_time, sink),
-            Expression::Hard => self.plucked_note(string, fret, velocity, PluckTechnique::Hard, event_time, sink),
-            Expression::FingerSlam => self.finger_slam(string, fret, event_time, sink),
-            Expression::HardDampen => self.hard_dampen(string, fret, velocity, event_time, sink),
+        if string_state.slur_active {
+            self.slur_note(string, fret, event_time, sink);
+        } else {
+            // --- Expression-specific handling -------------------------------------
+            // Any still-sounding note on this string is implicitly ended by the
+            // release loop above (same/higher old frets may stay pressed).
+            match string_state.expression {
+                Expression::Soft => self.plucked_note(string, fret, velocity, PluckTechnique::Soft, event_time, sink),
+                Expression::Hard => self.plucked_note(string, fret, velocity, PluckTechnique::Hard, event_time, sink),
+                Expression::FingerSlam => self.finger_slam(string, fret, event_time, sink),
+                Expression::HardDampen => self.hard_dampen(string, fret, velocity, event_time, sink),
+            }
+        }
+    }
+
+    fn slur_note(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
+        if fret != Fret::NoFret {
+            self.schedule_fret(string, fret, t, sink);
+            self.schedule_nut_dampen(string, fret, t, sink);
         }
     }
 
@@ -336,6 +342,7 @@ impl GuitarEngine {
     fn schedule_nut_dampen(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
         if fret != Fret::Fret1 {
             self.schedule_pre_dampen(string, Fret::Fret1, t, sink);
+            self.schedule_unfret(string, Fret::Fret1, shifted(t, 2000), sink);
         }
     }
 
@@ -443,8 +450,8 @@ impl GuitarEngine {
     // -----------------------------------------------------------------------
 
     fn note_off(&mut self, event_time: Instant, channel: u8, key: u8, sink: &mut dyn CommandSink) {
-        if channel == EXPRESSION_CHANNEL {
-            return; // Expression durations are ignored.
+        if channel as usize >= cardinality::<GuitarString>() {
+            return;
         }
 
         let Some(string) = channel_to_string(channel) else {
@@ -465,8 +472,8 @@ impl GuitarEngine {
     /// CC 123/120 "all notes off": stops whatever is sounding on the string,
     /// regardless of key (MuseScore sends this per channel on pause/stop).
     fn all_notes_off(&mut self, event_time: Instant, channel: u8, sink: &mut dyn CommandSink) {
-        if channel == EXPRESSION_CHANNEL {
-            return; // Expression durations are ignored.
+        if channel as usize >= cardinality::<GuitarString>() {
+            return;
         }
 
         let Some(string) = channel_to_string(channel) else {
@@ -528,12 +535,12 @@ impl GuitarEngine {
 /// channels.
 fn channel_to_string(channel: u8) -> Option<GuitarString> {
     match channel {
-        1 => Some(GuitarString::e),
-        2 => Some(GuitarString::B),
-        3 => Some(GuitarString::G),
-        4 => Some(GuitarString::D),
-        5 => Some(GuitarString::A),
-        6 => Some(GuitarString::E),
+        0 => Some(GuitarString::e),
+        1 => Some(GuitarString::B),
+        2 => Some(GuitarString::G),
+        3 => Some(GuitarString::D),
+        4 => Some(GuitarString::A),
+        5 => Some(GuitarString::E),
         _ => None,
     }
 }

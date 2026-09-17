@@ -17,12 +17,12 @@ use std::sync::mpsc::RecvTimeoutError::{Disconnected, Timeout};
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
-use enum_iterator::all;
+use enum_iterator::{all, cardinality};
 use protocol::{Fret, GuitarString, Message};
 use string_volume::{StringVolumeRange, StringVolumeTable};
 
 use crate::config::Config;
-use crate::engine::{EXPRESSION_CHANNEL, GuitarEngine};
+use crate::engine::{GuitarEngine, META_SLUR_END, META_SLUR_START};
 use crate::midi_input::EngineEvent;
 use crate::scheduler::{CommandSink, Scheduler};
 
@@ -30,6 +30,8 @@ use crate::scheduler::{CommandSink, Scheduler};
 const PLUCK_ENABLE_DELAY_MS: u64 = 300;
 /// Near-zero pluck volume used while idle (must be > 0 for the firmware).
 const IDLE_PLUCK_VOLUME: u8 = 10;
+
+pub const NUMBER_OF_CHANNELS: usize = cardinality::<GuitarString>();
 
 fn run() -> Result<(), String> {
     let (config, config_dir) = Config::load(std::env::args().nth(1))?;
@@ -109,11 +111,38 @@ fn run() -> Result<(), String> {
 }
 
 fn drain_event_buffer(buffer: &mut Vec<(Instant, EngineEvent)>, engine: &mut GuitarEngine, sink: &mut Scheduler) {
-    // sort buffer: first note events, then expression events
-    // use stable sort to keep ordering between events on the same string consistent
-    buffer.sort_by_key(|(_, event)| event.channel() != EXPRESSION_CHANNEL);
+    // All events in the buffer arrived in a 1ms time frame (so 'at the same time' for our purposes).
+    // Sort the events in the buffer to make sure they are handled in the correct order by the engine.
+    // 0. note off
+    // 1. expressions
+    // 2. notes
+    // 3. slurs
+    buffer.sort_by_key(|(_, event)| {
+        if event.channel() as usize >= NUMBER_OF_CHANNELS {
+            match event {
+                EngineEvent::NoteOn {
+                    channel: _,
+                    key,
+                    velocity: _,
+                } => {
+                    if matches!(*key, META_SLUR_END | META_SLUR_START) {
+                        3 // slur events after note events
+                    } else {
+                        1 // expression events before note events
+                    }
+                }
+                // note-off events first
+                _ => 0,
+            }
+        } else {
+            match event {
+                EngineEvent::NoteOn { .. } => 2,
+                // note-off events first
+                _ => 0,
+            }
+        }
+    });
 
-    // drain buffer in reverse -> handle expression events first
     for (event_time, event) in buffer.drain(..) {
         engine.handle(event_time, event, sink);
     }
