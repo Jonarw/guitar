@@ -5,11 +5,11 @@
 use std::iter::repeat_n;
 use std::time::{Duration, Instant};
 
-use enum_iterator::{all, cardinality};
 use midly::num::u7;
 use protocol::{Fret, GuitarString, Message, PluckTechnique};
 use string_volume::{MidiVolume, StringVolumeTable, get_number_of_frets};
 
+use crate::NUMBER_OF_CHANNELS;
 use crate::midi_input::EngineEvent;
 use crate::scheduler::CommandSink;
 
@@ -176,7 +176,7 @@ impl StringState {
 }
 
 struct StringStates {
-    states: [StringState; cardinality::<GuitarString>()],
+    states: [StringState; NUMBER_OF_CHANNELS],
 }
 
 impl StringStates {
@@ -247,7 +247,7 @@ impl GuitarEngine {
     }
 
     fn meta_note_on(&mut self, channel: u8, key: u8) {
-        let Some(string) = channel_to_string(channel - cardinality::<GuitarString>() as u8) else {
+        let Some(string) = channel_to_string(channel - NUMBER_OF_CHANNELS as u8) else {
             return;
         };
 
@@ -264,7 +264,7 @@ impl GuitarEngine {
     }
 
     fn note_on(&mut self, event_time: Instant, channel: u8, key: u8, velocity: u8, sink: &mut dyn CommandSink) {
-        if channel as usize >= cardinality::<GuitarString>() {
+        if channel as usize >= NUMBER_OF_CHANNELS {
             self.meta_note_on(channel, key);
             return;
         }
@@ -450,7 +450,7 @@ impl GuitarEngine {
     // -----------------------------------------------------------------------
 
     fn note_off(&mut self, event_time: Instant, channel: u8, key: u8, sink: &mut dyn CommandSink) {
-        if channel as usize >= cardinality::<GuitarString>() {
+        if channel as usize >= NUMBER_OF_CHANNELS {
             return;
         }
 
@@ -472,7 +472,7 @@ impl GuitarEngine {
     /// CC 123/120 "all notes off": stops whatever is sounding on the string,
     /// regardless of key (MuseScore sends this per channel on pause/stop).
     fn all_notes_off(&mut self, event_time: Instant, channel: u8, sink: &mut dyn CommandSink) {
-        if channel as usize >= cardinality::<GuitarString>() {
+        if channel as usize >= NUMBER_OF_CHANNELS {
             return;
         }
 

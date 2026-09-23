@@ -77,68 +77,6 @@ impl Message {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
-pub struct Percentage {
-    value: u8,
-}
-
-impl From<u8> for Percentage {
-    fn from(value: u8) -> Self {
-        Percentage::new(value)
-    }
-}
-
-impl From<Percentage> for u8 {
-    fn from(value: Percentage) -> Self {
-        value.get_value()
-    }
-}
-
-impl Percentage {
-    pub const fn new(value: u8) -> Self {
-        assert!(value <= 100);
-        Self { value }
-    }
-
-    pub fn get_value(&self) -> u8 {
-        self.value
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
-pub struct Duration {
-    value_ms: u16,
-}
-
-impl Duration {
-    pub const fn new(value_ms: u16) -> Self {
-        Self { value_ms }
-    }
-
-    pub fn get_value_ms(&self) -> u16 {
-        self.value_ms
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
-pub enum ConfigValue {
-    MaxForce(Percentage),
-    HoldForce(Percentage),
-    DampenForce(Percentage),
-    MarginalForce(Percentage),
-    ReleaseDuration(Duration),
-    DampenToFretRampDuration(Duration),
-    FretFastMaxForceDuration(Duration),
-    FretQuietPhase1Duration(Duration),
-    FretQuietPhase2Duration(Duration),
-    FretAdaptivePhase1Duration(Duration),
-    FretAdaptivePhase2Duration(Duration),
-    FretAdaptivePhase3Durtaion(Duration),
-    FretAdaptivePhase1Force(Percentage),
-    FretAdaptivePhase2Force(Percentage),
-    FretAdaptivePhase3Force(Percentage),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format, Serialize, Deserialize)]
 pub struct PluckVolume {
     volume: u8,
 }

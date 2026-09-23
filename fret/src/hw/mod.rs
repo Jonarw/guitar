@@ -30,6 +30,7 @@ pub fn init() -> Hw {
     {
         use embassy_stm32::rcc::*;
 
+        // disabled because broken on initial HW revision
         // config.rcc.hse = Some(Hse {
         //     freq: Hertz(16_000_000),
         //     mode: HseMode::Oscillator,
