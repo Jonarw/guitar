@@ -72,7 +72,7 @@ fn run() -> Result<(), String> {
     let (tx, rx) = channel();
     let _midi = midi_input::connect(&config.midi_port_substring, tx)?;
 
-    let mut engine = GuitarEngine::new(volume_table, config.latency_ms);
+    let mut engine = GuitarEngine::new(volume_table, config.latency_ms, config.midi_channel_mode);
     let mut sink = scheduler;
     eprintln!("Listening (latency {} ms)...", config.latency_ms);
 
@@ -126,7 +126,7 @@ fn drain_event_buffer(buffer: &mut Vec<(Instant, EngineEvent)>, engine: &mut Gui
                     velocity: _,
                 } => {
                     if matches!(*key, META_SLUR_END | META_SLUR_START) {
-                        3 // slur events after note events
+                        10000 // slur events after note events
                     } else {
                         1 // expression events before note events
                     }
@@ -136,7 +136,11 @@ fn drain_event_buffer(buffer: &mut Vec<(Instant, EngineEvent)>, engine: &mut Gui
             }
         } else {
             match event {
-                EngineEvent::NoteOn { .. } => 2,
+                EngineEvent::NoteOn {
+                    channel,
+                    key,
+                    velocity: _,
+                } => 1000 - *key as i32 + *channel as i32 * 128,
                 // note-off events first
                 _ => 0,
             }

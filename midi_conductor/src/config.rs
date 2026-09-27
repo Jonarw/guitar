@@ -10,6 +10,14 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
+pub enum MidiChannelMode {
+    // Ch0 -> e, Ch1 -> B ...
+    Fixed,
+    // engine decides which string to play each note on
+    Auto,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Serial device of the RS485 interface.
@@ -25,6 +33,8 @@ pub struct Config {
     pub calibration_csv: PathBuf,
     /// Substring of the MIDI input port to subscribe to.
     pub midi_port_substring: String,
+
+    pub midi_channel_mode: MidiChannelMode,
 }
 
 impl Default for Config {
@@ -35,6 +45,7 @@ impl Default for Config {
             latency_ms: 250,
             calibration_csv: PathBuf::from("calibration.csv"),
             midi_port_substring: "Midi Through Port-0".to_owned(),
+            midi_channel_mode: MidiChannelMode::Auto,
         }
     }
 }

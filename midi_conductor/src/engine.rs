@@ -10,6 +10,7 @@ use protocol::{Fret, GuitarString, Message, PluckTechnique};
 use string_volume::{MidiVolume, StringVolumeTable, get_number_of_frets};
 
 use crate::NUMBER_OF_CHANNELS;
+use crate::config::MidiChannelMode;
 use crate::midi_input::EngineEvent;
 use crate::scheduler::CommandSink;
 
@@ -149,6 +150,7 @@ struct StringState {
     last_pluck: Option<Instant>,
     slur_active: bool,
     string: GuitarString,
+    playing_note: Option<u8>,
 }
 
 impl StringState {
@@ -171,6 +173,7 @@ impl StringState {
             last_pluck: None,
             slur_active: false,
             string,
+            playing_note: None,
         }
     }
 }
@@ -188,8 +191,12 @@ impl StringStates {
         self.states.get(string as usize).expect("Invalid string")
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut StringState> {
+    pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut StringState> {
         self.states.iter_mut()
+    }
+
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &StringState> {
+        self.states.iter()
     }
 
     pub fn new() -> Self {
@@ -211,14 +218,16 @@ pub struct GuitarEngine {
     states: StringStates,
     volume_table: StringVolumeTable,
     latency: Duration,
+    midi_channel_mode: MidiChannelMode,
 }
 
 impl GuitarEngine {
-    pub fn new(volume_table: StringVolumeTable, latency_ms: u64) -> Self {
+    pub fn new(volume_table: StringVolumeTable, latency_ms: u64, midi_channel_mode: MidiChannelMode) -> Self {
         Self {
             states: StringStates::new(),
             volume_table,
             latency: Duration::from_millis(latency_ms),
+            midi_channel_mode,
         }
     }
 
@@ -263,14 +272,32 @@ impl GuitarEngine {
         }
     }
 
-    fn note_on(&mut self, event_time: Instant, channel: u8, key: u8, velocity: u8, sink: &mut dyn CommandSink) {
-        if channel as usize >= NUMBER_OF_CHANNELS {
-            self.meta_note_on(channel, key);
-            return;
+    fn get_auto_string(&self, key: u8) -> Option<GuitarString> {
+        for state in self.states.iter().rev() {
+            if key > get_base_pitch(state.string).as_u8() + get_number_of_frets(state.string) as u8 {
+                return None;
+            }
+
+            if state.playing_note.is_none() && get_base_pitch(state.string).as_u8() <= key {
+                return Some(state.string);
+            }
         }
 
-        let Some(string) = channel_to_string(channel) else {
-            eprintln!("Ignoring note on unknown channel {}", channel + 1);
+        None
+    }
+
+    fn note_on(&mut self, event_time: Instant, channel: u8, key: u8, velocity: u8, sink: &mut dyn CommandSink) {
+        let Some(string) = (match self.midi_channel_mode {
+            MidiChannelMode::Fixed => {
+                if channel as usize >= NUMBER_OF_CHANNELS {
+                    self.meta_note_on(channel, key);
+                    None
+                } else {
+                    channel_to_string(channel)
+                }
+            }
+            MidiChannelMode::Auto => self.get_auto_string(key),
+        }) else {
             return;
         };
 
@@ -279,6 +306,8 @@ impl GuitarEngine {
             eprintln!("Ignoring note: key {key} out of range for string {string:?}");
             return;
         };
+
+        string_state.playing_note = Some(key);
 
         // --- Release held frets above the new fret ----------------------------
         // A pressed (or dampened) higher fret would mask the lower note.
@@ -450,18 +479,26 @@ impl GuitarEngine {
     // -----------------------------------------------------------------------
 
     fn note_off(&mut self, event_time: Instant, channel: u8, key: u8, sink: &mut dyn CommandSink) {
-        if channel as usize >= NUMBER_OF_CHANNELS {
-            return;
-        }
-
-        let Some(string) = channel_to_string(channel) else {
-            eprintln!("Ignoring note-off on unknown channel {}", channel + 1);
+        let Some(string) = (match self.midi_channel_mode {
+            MidiChannelMode::Fixed => {
+                if channel as usize >= NUMBER_OF_CHANNELS {
+                    None
+                } else {
+                    channel_to_string(channel)
+                }
+            }
+            MidiChannelMode::Auto => self
+                .states
+                .iter()
+                .find(|s| s.playing_note == Some(key))
+                .map(|s| s.string),
+        }) else {
             return;
         };
 
         let string_state = self.states.get_state_mut(string);
         let Some(_) = string_state.get_fret_by_pitch(key) else {
-            eprintln!("Ignoring note: key {key} out of range for string {string:?}");
+            eprintln!("Ignoring note-off: key {key} out of range for string {string:?}");
             return;
         };
 
@@ -469,46 +506,30 @@ impl GuitarEngine {
         self.stop_sounding_all(string, event_time, sink);
     }
 
-    /// CC 123/120 "all notes off": stops whatever is sounding on the string,
+    /// CC 123/120 "all notes off": stops whatever is sounding
     /// regardless of key (MuseScore sends this per channel on pause/stop).
-    fn all_notes_off(&mut self, event_time: Instant, channel: u8, sink: &mut dyn CommandSink) {
-        if channel as usize >= NUMBER_OF_CHANNELS {
-            return;
+    fn all_notes_off(&mut self, event_time: Instant, _channel: u8, sink: &mut dyn CommandSink) {
+        let playing_strings: Vec<_> = self
+            .states
+            .iter()
+            .filter(|s| s.playing_note.is_some())
+            .map(|s| s.string)
+            .collect();
+
+        for string in playing_strings {
+            self.stop_sounding_all(string, event_time, sink);
         }
-
-        let Some(string) = channel_to_string(channel) else {
-            eprintln!("Ignoring note_off on unknown channel {}", channel + 1);
-            return;
-        };
-
-        self.stop_sounding_all(string, event_time, sink);
     }
 
     fn stop_sounding_all(&mut self, string: GuitarString, event_time: Instant, sink: &mut dyn CommandSink) {
-        let st = self.states.get_state(string);
-        let mut no_active_frets = 0;
-        for (fret, fret_state) in st.fret_states.clone().frets() {
-            match fret_state {
-                FretState::Idle | FretState::Releasing(_) => {} // nothing to do,
-                FretState::Holding => {
-                    self.schedule_mute_sequence(string, fret, event_time, sink);
-                    no_active_frets += 1;
-                }
-                FretState::Damping => {
-                    if fret != Fret::Fret1 {
-                        self.schedule_unfret(string, fret, event_time, sink);
-                    }
+        let st = self.states.get_state_mut(string);
+        let Some(playing_note) = st.playing_note else {
+            return;
+        };
 
-                    no_active_frets += 1;
-                }
-            }
-        }
-
-        // if no frets were active, we had an open string -> mute it
-        if no_active_frets == 0 {
-            self.schedule_mute_sequence(string, Fret::NoFret, event_time, sink);
-            self.schedule_dampen(string, Fret::Fret1, event_time, sink);
-        }
+        st.playing_note = None;
+        let fret = st.get_fret_by_pitch(playing_note).expect("String is playing this note");
+        self.schedule_mute_sequence(string, fret, event_time, sink);
     }
 
     fn schedule_mute_sequence(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
@@ -648,6 +669,7 @@ mod tests {
                 engine: GuitarEngine::new(
                     StringVolumeTable::uniform(StringVolumeRange { min: 0, max: 255 }),
                     LATENCY_MS,
+                    MidiChannelMode::Fixed,
                 ),
                 sink: RecordingSink::default(),
                 base,
