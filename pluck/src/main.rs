@@ -104,7 +104,6 @@ async fn process_message(message: &Message, rs485: &mut Rs485) {
         Message::Pluck(string)
         | Message::PluckDisable(string)
         | Message::PluckEnable(string)
-        | Message::PluckSpeed(string, _)
         | Message::PluckTechnique(string, _) => get_signals(*string).pluck_signal.signal(*message),
         Message::Reset => {
             for signal in SIGNALS.iter() {
@@ -172,27 +171,23 @@ struct StepperStuff {
     hw: PluckStepper,
     stepgen: Stepgen,
     state: PluckStepperState,
-    speed: u16,
 }
 
 static FULL_CIRCLE_STEPS: i32 = 200 * 8;
-static PLUCK_STEPS: i32 = FULL_CIRCLE_STEPS / 3;
+static PLUCK_STEPS: i32 = FULL_CIRCLE_STEPS / 4;
 
 impl StepperStuff {
-    const MAX_SPEED: u16 = 20000;
+    const MAX_SPEED: u16 = 18000;
     pub fn new(hw: PluckStepper) -> Self {
-        const ACC: u32 = 1_000_000;
+        const ACC: u32 = 800_000;
         let mut stepgen = Stepgen::new(1_000_000);
         stepgen.set_acceleration(ACC << 8).unwrap();
-        let mut ret = Self {
+        stepgen.set_target_speed((Self::MAX_SPEED as u32) << 8).unwrap();
+        Self {
             hw,
             stepgen,
             state: PluckStepperState::Disabled,
-            speed: 0,
-        };
-
-        ret.set_speed(Self::MAX_SPEED);
-        ret
+        }
     }
 
     async fn rotate(&mut self, steps: u32) {
@@ -273,15 +268,7 @@ impl StepperStuff {
             }
         };
 
-        let speed = self.speed;
-        self.set_speed(Self::MAX_SPEED);
         self.move_to_state(new_state).await;
-        self.set_speed(speed);
-    }
-
-    pub fn set_speed(&mut self, speed: u16) {
-        self.stepgen.set_target_speed((speed as u32) << 8).unwrap();
-        self.speed = speed;
     }
 }
 
@@ -297,7 +284,6 @@ async fn stepper_task(stepper: PluckStepper, signal: &'static PluckSignal) -> ! 
             Message::PluckDisable(_) | Message::Reset => stepper.disable().await,
             Message::Pluck(_) => stepper.pluck().await,
             Message::PluckTechnique(_, t) => stepper.set_technique(t).await,
-            Message::PluckSpeed(_, s) => stepper.set_speed(s),
 
             _ => defmt::error!("Received invalid {} command while in state {}", action, stepper.state),
         }

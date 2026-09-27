@@ -199,12 +199,6 @@ fn parse_action(action: &str, args: &[&str], line_no: usize) -> Result<Message> 
             let volume = parse_u8(args[1], line_no, "volume")?;
             Ok(Message::PluckVolume(string, volume.into()))
         }
-        "pluck_speed" => {
-            ensure_len(args, 2, line_no, action)?;
-            let string = parse_guitar_string(args[0], line_no)?;
-            let speed = parse_u16(args[1], line_no, "speed")?;
-            Ok(Message::PluckSpeed(string, speed))
-        }
         "pluck_technique" => {
             ensure_len(args, 2, line_no, action)?;
             let string = parse_guitar_string(args[0], line_no)?;
@@ -325,12 +319,6 @@ fn parse_u8(value: &str, line_no: usize, field_name: &str) -> Result<u8> {
     value
         .parse::<u8>()
         .with_context(|| format!("line {}: invalid {} '{}', expected 0-255", line_no, field_name, value))
-}
-
-fn parse_u16(value: &str, line_no: usize, field_name: &str) -> Result<u16> {
-    value
-        .parse::<u16>()
-        .with_context(|| format!("line {}: invalid {} '{}', expected 0-65535", line_no, field_name, value))
 }
 
 fn parse_pluck_technique(value: &str, line_no: usize) -> Result<PluckTechnique> {

@@ -26,7 +26,6 @@ pub enum Message {
     Dampen(GuitarString, Fret),
     FretCalibration(GuitarString, Fret),
     Reset,
-    PluckSpeed(GuitarString, u16),
     PluckTechnique(GuitarString, PluckTechnique),
 }
 
@@ -48,7 +47,6 @@ impl Message {
         match self {
             Message::Pluck(guitar_string)
             | Message::PluckTechnique(guitar_string, _)
-            | Message::PluckSpeed(guitar_string, _)
             | Message::PluckPresence(guitar_string)
             | Message::PluckVolume(guitar_string, _)
             | Message::PluckEnable(guitar_string)

@@ -107,10 +107,6 @@ fn parse_command(line: &str) -> Result<Message, String> {
             let (string, volume) = parse_string_and_volume(rest)?;
             Ok(Message::PluckVolume(string, volume.into()))
         }
-        'S' | 's' => {
-            let (string, speed) = parse_string_and_speed(rest)?;
-            Ok(Message::PluckSpeed(string, speed))
-        }
         'T' | 't' => {
             let (string, technique) = parse_string_and_technique(rest)?;
             Ok(Message::PluckTechnique(string, technique))
@@ -214,24 +210,6 @@ fn parse_string_and_volume(rest: &str) -> Result<(GuitarString, u8), String> {
 
     let volume = parse_volume(volume_str)?;
     Ok((string, volume))
-}
-
-fn parse_string_and_speed(rest: &str) -> Result<(GuitarString, u16), String> {
-    let mut chars = rest.chars();
-    let string_char = chars
-        .next()
-        .ok_or_else(|| "missing string; expected one of E,A,D,G,B,e".to_string())?;
-    let string = parse_guitar_string(string_char)?;
-
-    let speed_str = chars.as_str();
-    if speed_str.is_empty() {
-        return Err("missing speed; expected 0-65535".to_string());
-    }
-
-    let speed = speed_str
-        .parse::<u16>()
-        .map_err(|_| "invalid speed; expected 0-65535".to_string())?;
-    Ok((string, speed))
 }
 
 fn parse_string_and_technique(rest: &str) -> Result<(GuitarString, PluckTechnique), String> {

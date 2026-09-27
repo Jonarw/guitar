@@ -39,7 +39,6 @@ fn format_action(message: &Message) -> Result<String, String> {
         Message::UnfretFast(s, f) => format!("unfret_fast {} {}", string_name(*s), fret_number(*f)),
         Message::Dampen(s, f) => format!("dampen {} {}", string_name(*s), fret_number(*f)),
         Message::PluckTechnique(s, t) => format!("pluck_technique {} {}", string_name(*s), pluck_technique(*t)),
-        Message::PluckSpeed(s, f) => format!("pluck_speed {} {}", string_name(*s), *f),
         other => {
             return Err(format!(
                 "message {other:?} cannot be represented in the conductor script format"
