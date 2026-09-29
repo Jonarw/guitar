@@ -120,9 +120,9 @@ async fn pwm_ramp(
 
 async fn idle_to_down(pwm: &mut GuitarStringPwm, signal: &'static FretSignal) -> Result<(), Interrupted> {
     pwm.set_duty_cycle_percent(PWM_MAX_FORCE);
-    wait_millis_interruptible(4, signal).await?;
+    wait_millis_interruptible(5, signal).await?;
     pwm.set_duty_cycle_fully_off();
-    wait_millis_interruptible(10, signal).await?;
+    wait_millis_interruptible(9, signal).await?;
     pwm.set_duty_cycle_percent(PWM_DAMPEN_FORCE);
     Ok(())
 }
