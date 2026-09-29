@@ -22,3 +22,13 @@ calibration_csv = "calibration.csv"
 # Substring of the MIDI input port to subscribe to.
 # With MuseScore set to the system "Midi Through" device, keep the default.
 midi_port_substring = "Midi Through Port-0"
+
+# How the engine expects MIDI note and Meta events
+# Current options:
+#   - MuseScorePlugin
+#     1:1 Mapping of Midi channel to string (ch1 -> e, ch2 -> B, ... ch7 -> Meta e, ch8 -> Meta B, ...)
+#     meant to be used in combination with the apply_markers MuseScore plugin
+#   - AutoNoMeta
+#     Engine automatically decides which string to play a note on. Lower channels get priority. Meta events
+#     currently not implemented.
+midi_channel_mode = "AutoNoMeta"

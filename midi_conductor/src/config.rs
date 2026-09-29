@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub enum MidiChannelMode {
     // Ch0 -> e, Ch1 -> B ...
-    Fixed,
+    MuseScorePlugin,
     // engine decides which string to play each note on
-    Auto,
+    AutoNoMeta,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,7 +45,7 @@ impl Default for Config {
             latency_ms: 250,
             calibration_csv: PathBuf::from("calibration.csv"),
             midi_port_substring: "Midi Through Port-0".to_owned(),
-            midi_channel_mode: MidiChannelMode::Auto,
+            midi_channel_mode: MidiChannelMode::AutoNoMeta,
         }
     }
 }

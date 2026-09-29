@@ -7,20 +7,33 @@ use std::time::{Duration, Instant};
 use midir::{MidiInput, MidiInputConnection};
 use midly::{MidiMessage, live::LiveEvent};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoteOnData {
+    pub channel: u8,
+    pub key: u8,
+    pub velocity: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoteOffData {
+    pub channel: u8,
+    pub key: u8,
+}
+
 /// Normalized MIDI event the engine understands. Channels are 0-based.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineEvent {
-    NoteOn { channel: u8, key: u8, velocity: u8 },
-    NoteOff { channel: u8, key: u8 },
+    NoteOn(NoteOnData),
+    NoteOff(NoteOffData),
     AllNotesOff { channel: u8 },
 }
 
 impl EngineEvent {
     pub fn channel(&self) -> u8 {
         match self {
-            EngineEvent::NoteOn { channel, .. }
-            | EngineEvent::NoteOff { channel, .. }
-            | EngineEvent::AllNotesOff { channel } => *channel,
+            EngineEvent::NoteOn(data) => data.channel,
+            EngineEvent::NoteOff(data) => data.channel,
+            EngineEvent::AllNotesOff { channel } => *channel,
         }
     }
 }
@@ -118,19 +131,19 @@ fn handle_event(ts_micros: u64, bytes: &[u8], state: &mut CallbackState) {
     let channel = channel.as_int();
     let event = match message {
         // Velocity-0 NoteOn is the conventional NoteOff.
-        MidiMessage::NoteOn { key, vel } if vel.as_int() == 0 => EngineEvent::NoteOff {
+        MidiMessage::NoteOn { key, vel } if vel.as_int() == 0 => EngineEvent::NoteOff(NoteOffData {
             channel,
             key: key.as_int(),
-        },
-        MidiMessage::NoteOn { key, vel } => EngineEvent::NoteOn {
+        }),
+        MidiMessage::NoteOn { key, vel } => EngineEvent::NoteOn(NoteOnData {
             channel,
             key: key.as_int(),
             velocity: vel.as_int(),
-        },
-        MidiMessage::NoteOff { key, .. } => EngineEvent::NoteOff {
+        }),
+        MidiMessage::NoteOff { key, .. } => EngineEvent::NoteOff(NoteOffData {
             channel,
             key: key.as_int(),
-        },
+        }),
         MidiMessage::Controller { controller, .. } if MidiControlMessage::is_all_notes_off(controller.as_int()) => {
             EngineEvent::AllNotesOff { channel }
         }

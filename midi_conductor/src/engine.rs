@@ -11,7 +11,7 @@ use string_volume::{MidiVolume, StringVolumeTable, get_number_of_frets};
 
 use crate::NUMBER_OF_CHANNELS;
 use crate::config::MidiChannelMode;
-use crate::midi_input::EngineEvent;
+use crate::midi_input::{EngineEvent, NoteOffData};
 use crate::scheduler::CommandSink;
 
 /// MIDI pitch value in range `0..=127`.
@@ -91,11 +91,16 @@ pub enum Expression {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FretState {
+enum FretPosition {
     Idle,
     Holding,
     Damping,
-    Releasing(Instant),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FretState {
+    position: FretPosition,
+    release_time: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,15 +111,15 @@ struct FretStates {
 impl FretStates {
     pub fn new(string: GuitarString) -> Self {
         Self {
-            fret_states: repeat_n(FretState::Idle, get_number_of_frets(string) + 1).collect(),
+            fret_states: repeat_n(
+                FretState {
+                    position: FretPosition::Idle,
+                    release_time: None,
+                },
+                get_number_of_frets(string) + 1,
+            )
+            .collect(),
         }
-    }
-
-    pub fn frets(&self) -> impl Iterator<Item = (Fret, FretState)> {
-        self.fret_states
-            .iter()
-            .enumerate()
-            .map(|(i, state)| (fret_from_number(i as u8), *state))
     }
 
     pub fn index_to_fret(&self, index: u8) -> Option<Fret> {
@@ -127,10 +132,6 @@ impl FretStates {
 
     pub fn get_state_mut(&mut self, fret: Fret) -> &mut FretState {
         self.fret_states.get_mut(fret as usize).expect("Fret should exist")
-    }
-
-    pub fn set_state(&mut self, fret: Fret, state: FretState) {
-        *self.get_state_mut(fret) = state;
     }
 
     pub fn frets_mut(&mut self) -> impl Iterator<Item = (Fret, &mut FretState)> {
@@ -151,6 +152,7 @@ struct StringState {
     slur_active: bool,
     string: GuitarString,
     playing_note: Option<u8>,
+    note_priority: u8,
 }
 
 impl StringState {
@@ -164,6 +166,10 @@ impl StringState {
         self.fret_states.index_to_fret(index)
     }
 
+    fn can_play_note(&self, pitch: u8) -> bool {
+        self.get_fret_by_pitch(pitch).is_some()
+    }
+
     pub fn new(string: GuitarString) -> Self {
         Self {
             expression: Expression::default(),
@@ -174,6 +180,7 @@ impl StringState {
             slur_active: false,
             string,
             playing_note: None,
+            note_priority: 0,
         }
     }
 }
@@ -185,10 +192,6 @@ struct StringStates {
 impl StringStates {
     pub fn get_state_mut(&mut self, string: GuitarString) -> &mut StringState {
         self.states.get_mut(string as usize).expect("Invalid string")
-    }
-
-    pub fn get_state(&self, string: GuitarString) -> &StringState {
-        self.states.get(string as usize).expect("Invalid string")
     }
 
     pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut StringState> {
@@ -231,25 +234,205 @@ impl GuitarEngine {
         }
     }
 
-    /// Handles one MIDI event that occurred at `event_time`.
-    pub fn handle(&mut self, event_time: Instant, event: EngineEvent, sink: &mut dyn CommandSink) {
+    fn handle_fixed(&mut self, event_time: Instant, mut events: Vec<EngineEvent>, sink: &mut dyn CommandSink) {
+        let meta_events: Vec<_> = events
+            .extract_if(.., |e| e.channel() as usize >= NUMBER_OF_CHANNELS)
+            .filter_map(|e| match e {
+                EngineEvent::NoteOn(note_on_data) => Some(note_on_data),
+                _ => None,
+            })
+            .collect();
+
+        for meta_event in meta_events.iter().filter(|e| e.key != META_SLUR_START) {
+            self.meta_note_on(meta_event.channel, meta_event.key);
+        }
+
+        for off_event in events
+            .iter()
+            .filter(|e| matches!(e, EngineEvent::NoteOff { .. } | EngineEvent::AllNotesOff { .. }))
+        {
+            match off_event {
+                EngineEvent::NoteOff(NoteOffData { channel, key }) => self.note_off(event_time, *channel, *key, sink),
+                EngineEvent::AllNotesOff { .. } => self.all_notes_off(event_time, sink),
+                _ => panic!("Only processing NoteOff events here"),
+            }
+        }
+
+        for event in events.iter().filter_map(|e| match e {
+            EngineEvent::NoteOn(note_on_data) => Some(note_on_data),
+            _ => None,
+        }) {
+            self.note_on_string(
+                event_time,
+                channel_to_string(event.channel).expect("Meta events already handles"),
+                event.key,
+                event.velocity,
+                sink,
+            );
+        }
+
+        for meta_event in meta_events.iter().filter(|e| e.key == META_SLUR_START) {
+            self.meta_note_on(meta_event.channel, meta_event.key);
+        }
+    }
+
+    fn handle_auto(&mut self, event_time: Instant, mut events: Vec<EngineEvent>, sink: &mut dyn CommandSink) {
+        // first note off events
+        for off_event in events.extract_if(.., |e| {
+            matches!(e, EngineEvent::NoteOff { .. } | EngineEvent::AllNotesOff { .. })
+        }) {
+            match off_event {
+                EngineEvent::NoteOff(NoteOffData { channel, key }) => self.note_off(event_time, channel, key, sink),
+                EngineEvent::AllNotesOff { .. } => self.all_notes_off(event_time, sink),
+                _ => panic!("Only processing NoteOff events here"),
+            }
+        }
+
+        // At this point, events only contains note-on events.
+        let mut events: Vec<_> = events
+            .iter()
+            .map(|e| match e {
+                EngineEvent::NoteOn(note_on_data) => *note_on_data,
+                _ => panic!("Only NoteOn events should be left"),
+            })
+            .collect();
+
+        // Sort by channel, then by key (higher notes first)
+        events.sort_by_key(|e| (e.channel, 128 - e.key));
+
+        let mut possible_mappings: Vec<_> = events
+            .iter()
+            .map(|event| {
+                // strings that can play this note and are free
+                let primary: Vec<_> = self
+                    .states
+                    .iter()
+                    .rev()
+                    .filter(|st| st.playing_note.is_none() && st.can_play_note(event.key))
+                    .collect();
+
+                // strings that can play this note and are busy, but would be eligible for interruption
+                let secondary: Vec<_> = self
+                    .states
+                    .iter()
+                    .rev()
+                    .filter(|st| {
+                        st.playing_note.is_some() && st.note_priority > event.channel && st.can_play_note(event.key)
+                    })
+                    .collect();
+
+                (event, primary, secondary)
+            })
+            .collect();
+
+        let mut mappings = Vec::new();
+
+        while !possible_mappings.is_empty() {
+            let result = if let Some(index) = possible_mappings
+                .iter()
+                .position(|(_, primary, secondary)| primary.is_empty() && secondary.len() == 1)
+            {
+                // can only play this note on one string where we need to interrupt another note
+                let (event, _, secondary) = &possible_mappings[index];
+                Some((index, **event, secondary.first().expect("We filtered").string))
+            } else if let Some(index) = possible_mappings.iter().position(|(_, primary, _)| primary.len() == 1) {
+                // can only play this note on one string
+                let (event, primary, _) = &possible_mappings[index];
+                Some((index, **event, primary.first().expect("We filtered").string))
+            } else if let Some(index) = possible_mappings
+                .iter()
+                .position(|(_, primary, secondary)| primary.is_empty() && secondary.len() > 1)
+            {
+                // can play this note on multiple strings, need to interrupt in any case -> choose no open string
+                let (event, _, secondary) = &possible_mappings[index];
+                Some((
+                    index,
+                    **event,
+                    secondary
+                        .iter()
+                        .find(|st| st.get_fret_by_pitch(event.key).expect("Already checked") != Fret::NoFret)
+                        .expect("We filtered")
+                        .string,
+                ))
+            } else if let Some(index) = possible_mappings.iter().position(|(_, primary, _)| primary.len() > 1) {
+                // can play this note on multiple free strings -> choose no open string
+                let (event, primary, _) = &possible_mappings[index];
+                Some((
+                    index,
+                    **event,
+                    primary
+                        .iter()
+                        .find(|st| st.get_fret_by_pitch(event.key).expect("Already checked") != Fret::NoFret)
+                        .expect("We filtered")
+                        .string,
+                ))
+            } else {
+                None
+            };
+
+            if let Some((index, event, string)) = result {
+                mappings.push((event, string));
+                possible_mappings.remove(index);
+            }
+
+            // filter out notes that are not possible to map
+            possible_mappings.retain_mut(|(event, primary, secondary)| {
+                if primary.is_empty() && secondary.is_empty() {
+                    eprintln!("Dropping event {event:?} (no string available)");
+                    return false;
+                }
+
+                if let Some((_, _, string)) = result {
+                    primary.retain(|st| st.string != string);
+                    secondary.retain(|st| st.string != string);
+                }
+
+                true
+            });
+        }
+
+        for (event, string) in mappings {
+            let st = self.states.get_state_mut(string);
+
+            let note_priority = st.note_priority;
+            st.note_priority = event.channel;
+
+            // interrupt previous note if necessary
+            if let Some(playing_note) = st.playing_note {
+                eprintln!(
+                    "Interrupting note {playing_note} on string {string:?} (prio: {note_priority}) with {event:?}"
+                );
+                self.note_off(event_time, note_priority, playing_note, sink);
+            }
+
+            self.note_on_string(event_time, string, event.key, event.velocity, sink);
+        }
+    }
+
+    pub fn handle(
+        &mut self,
+        event_time: Instant,
+        events: impl Iterator<Item = EngineEvent>,
+        sink: &mut dyn CommandSink,
+    ) {
         let event_time = event_time + self.latency;
         self.handle_pending_unfret(event_time);
+        let events: Vec<_> = events.collect();
 
-        match event {
-            EngineEvent::NoteOn { channel, key, velocity } => self.note_on(event_time, channel, key, velocity, sink),
-            EngineEvent::NoteOff { channel, key } => self.note_off(event_time, channel, key, sink),
-            EngineEvent::AllNotesOff { channel } => self.all_notes_off(event_time, channel, sink),
+        match self.midi_channel_mode {
+            MidiChannelMode::MuseScorePlugin => self.handle_fixed(event_time, events, sink),
+            MidiChannelMode::AutoNoMeta => self.handle_auto(event_time, events, sink),
         }
     }
 
     fn handle_pending_unfret(&mut self, event_time: Instant) {
         for state in self.states.iter_mut() {
             for (_, state) in state.fret_states.frets_mut() {
-                if let FretState::Releasing(time) = state
-                    && *time < event_time
+                if let Some(release_time) = state.release_time
+                    && release_time < event_time
                 {
-                    *state = FretState::Idle;
+                    state.release_time = None;
+                    state.position = FretPosition::Idle;
                 }
             }
         }
@@ -272,35 +455,14 @@ impl GuitarEngine {
         }
     }
 
-    fn get_auto_string(&self, key: u8) -> Option<GuitarString> {
-        for state in self.states.iter().rev() {
-            if key > get_base_pitch(state.string).as_u8() + get_number_of_frets(state.string) as u8 {
-                return None;
-            }
-
-            if state.playing_note.is_none() && get_base_pitch(state.string).as_u8() <= key {
-                return Some(state.string);
-            }
-        }
-
-        None
-    }
-
-    fn note_on(&mut self, event_time: Instant, channel: u8, key: u8, velocity: u8, sink: &mut dyn CommandSink) {
-        let Some(string) = (match self.midi_channel_mode {
-            MidiChannelMode::Fixed => {
-                if channel as usize >= NUMBER_OF_CHANNELS {
-                    self.meta_note_on(channel, key);
-                    None
-                } else {
-                    channel_to_string(channel)
-                }
-            }
-            MidiChannelMode::Auto => self.get_auto_string(key),
-        }) else {
-            return;
-        };
-
+    fn note_on_string(
+        &mut self,
+        event_time: Instant,
+        string: GuitarString,
+        key: u8,
+        velocity: u8,
+        sink: &mut dyn CommandSink,
+    ) {
         let string_state = self.states.get_state_mut(string);
         let Some(fret) = string_state.get_fret_by_pitch(key) else {
             eprintln!("Ignoring note: key {key} out of range for string {string:?}");
@@ -312,12 +474,12 @@ impl GuitarEngine {
         // --- Release held frets above the new fret ----------------------------
         // A pressed (or dampened) higher fret would mask the lower note.
         for (fret, state) in string_state.fret_states.frets_mut().skip(fret as usize + 1) {
-            if *state != FretState::Idle {
+            if state.position != FretPosition::Idle {
                 sink.schedule(
                     shifted(event_time, -EMERGENCY_UNFRET_MS),
                     Message::UnfretFast(string, fret),
                 );
-                *state = FretState::Idle;
+                state.position = FretPosition::Idle;
             }
         }
 
@@ -384,18 +546,18 @@ impl GuitarEngine {
 
         let st = &mut self.states.get_state_mut(string);
         let fret_state = st.fret_states.get_state_mut(fret);
-        if *fret_state != FretState::Damping {
+        if fret_state.position != FretPosition::Damping {
             sink.schedule(t, Message::Dampen(string, fret));
-            *fret_state = FretState::Damping;
+            fret_state.position = FretPosition::Damping;
         }
     }
 
     fn schedule_fret(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
         let st = &mut self.states.get_state_mut(string);
         let fret_state = st.fret_states.get_state_mut(fret);
-        if *fret_state != FretState::Holding {
+        if fret_state.position != FretPosition::Holding {
             sink.schedule(shifted(t, -FRET_QUIET_PREP_MS), Message::FretQuiet(string, fret));
-            *fret_state = FretState::Holding;
+            fret_state.position = FretPosition::Holding;
         }
     }
 
@@ -416,12 +578,12 @@ impl GuitarEngine {
         let st = &mut self.states.get_state_mut(string);
 
         let fret_state = st.fret_states.get_state_mut(fret);
-        if *fret_state != FretState::Idle {
+        if fret_state.position != FretPosition::Idle {
             sink.schedule(shifted(t, -2 * FRET_FAST_PREP_MS), Message::UnfretFast(string, fret));
         }
 
         sink.schedule(shifted(t, -FRET_FAST_PREP_MS), Message::FretFast(string, fret));
-        *fret_state = FretState::Holding;
+        fret_state.position = FretPosition::Holding;
     }
 
     /// Hard pluck while only dampening the note position: percussive sound.
@@ -461,15 +623,12 @@ impl GuitarEngine {
         if st.last_volume == Some(volume) {
             return;
         }
-        // Ideally PLUCK_VOLUME_PREP_MS before the pluck; if the previous pluck
-        // was too recent for that, place the command midway between the two.
-        let ideal = shifted(t, -PLUCK_VOLUME_PREP_MS);
-        let at = match st.last_pluck {
-            Some(prev) if ideal < prev + Duration::from_millis(PLUCK_VOLUME_PREP_MS as u64 / 2) => {
-                prev + (t - prev) / 2
-            }
-            _ => ideal,
-        };
+
+        let mut at = shifted(t, -PLUCK_VOLUME_PREP_MS);
+        if let Some(last_pluck) = st.last_pluck {
+            at = at.max(last_pluck);
+        }
+
         sink.schedule(at, Message::PluckVolume(string, volume.into()));
         st.last_volume = Some(volume);
     }
@@ -480,14 +639,14 @@ impl GuitarEngine {
 
     fn note_off(&mut self, event_time: Instant, channel: u8, key: u8, sink: &mut dyn CommandSink) {
         let Some(string) = (match self.midi_channel_mode {
-            MidiChannelMode::Fixed => {
+            MidiChannelMode::MuseScorePlugin => {
                 if channel as usize >= NUMBER_OF_CHANNELS {
                     None
                 } else {
                     channel_to_string(channel)
                 }
             }
-            MidiChannelMode::Auto => self
+            MidiChannelMode::AutoNoMeta => self
                 .states
                 .iter()
                 .find(|s| s.playing_note == Some(key))
@@ -508,7 +667,7 @@ impl GuitarEngine {
 
     /// CC 123/120 "all notes off": stops whatever is sounding
     /// regardless of key (MuseScore sends this per channel on pause/stop).
-    fn all_notes_off(&mut self, event_time: Instant, _channel: u8, sink: &mut dyn CommandSink) {
+    fn all_notes_off(&mut self, event_time: Instant, sink: &mut dyn CommandSink) {
         let playing_strings: Vec<_> = self
             .states
             .iter()
@@ -527,9 +686,12 @@ impl GuitarEngine {
             return;
         };
 
-        st.playing_note = None;
         let fret = st.get_fret_by_pitch(playing_note).expect("String is playing this note");
         self.schedule_mute_sequence(string, fret, event_time, sink);
+        // self.mute_idle_strings(event_time, sink);
+
+        let st = self.states.get_state_mut(string);
+        st.playing_note = None;
     }
 
     fn schedule_mute_sequence(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
@@ -547,8 +709,8 @@ impl GuitarEngine {
     fn schedule_unfret(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
         let st = &mut self.states.get_state_mut(string);
         sink.schedule(t, Message::Unfret(string, fret));
-        st.fret_states
-            .set_state(fret, FretState::Releasing(shifted(t, UNFRET_QUIET_DURATION_MS)));
+        let fs = st.fret_states.get_state_mut(fret);
+        fs.release_time = Some(shifted(t, UNFRET_QUIET_DURATION_MS));
     }
 }
 
@@ -669,7 +831,7 @@ mod tests {
                 engine: GuitarEngine::new(
                     StringVolumeTable::uniform(StringVolumeRange { min: 0, max: 255 }),
                     LATENCY_MS,
-                    MidiChannelMode::Fixed,
+                    MidiChannelMode::MuseScorePlugin,
                 ),
                 sink: RecordingSink::default(),
                 base,
@@ -683,14 +845,17 @@ mod tests {
         fn on(&mut self, ms: u64, channel: u8, key: u8, velocity: u8) {
             self.engine.handle(
                 self.at(ms),
-                EngineEvent::NoteOn { channel, key, velocity },
+                EngineEvent::NoteOn(NoteOnData { channel, key, velocity }),
                 &mut self.sink,
             );
         }
 
         fn off(&mut self, ms: u64, channel: u8, key: u8) {
-            self.engine
-                .handle(self.at(ms), EngineEvent::NoteOff { channel, key }, &mut self.sink);
+            self.engine.handle(
+                self.at(ms),
+                EngineEvent::NoteOff(NoteOffData { channel, key }),
+                &mut self.sink,
+            );
         }
 
         fn messages(&self) -> Vec<(u64, Message)> {

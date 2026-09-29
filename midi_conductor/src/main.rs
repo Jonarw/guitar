@@ -22,7 +22,7 @@ use protocol::{Fret, GuitarString, Message};
 use string_volume::{StringVolumeRange, StringVolumeTable};
 
 use crate::config::Config;
-use crate::engine::{GuitarEngine, META_SLUR_END, META_SLUR_START};
+use crate::engine::GuitarEngine;
 use crate::midi_input::EngineEvent;
 use crate::scheduler::{CommandSink, Scheduler};
 
@@ -111,44 +111,8 @@ fn run() -> Result<(), String> {
 }
 
 fn drain_event_buffer(buffer: &mut Vec<(Instant, EngineEvent)>, engine: &mut GuitarEngine, sink: &mut Scheduler) {
-    // All events in the buffer arrived in a 1ms time frame (so 'at the same time' for our purposes).
-    // Sort the events in the buffer to make sure they are handled in the correct order by the engine.
-    // 0. note off
-    // 1. expressions
-    // 2. notes
-    // 3. slurs
-    buffer.sort_by_key(|(_, event)| {
-        if event.channel() as usize >= NUMBER_OF_CHANNELS {
-            match event {
-                EngineEvent::NoteOn {
-                    channel: _,
-                    key,
-                    velocity: _,
-                } => {
-                    if matches!(*key, META_SLUR_END | META_SLUR_START) {
-                        10000 // slur events after note events
-                    } else {
-                        1 // expression events before note events
-                    }
-                }
-                // note-off events first
-                _ => 0,
-            }
-        } else {
-            match event {
-                EngineEvent::NoteOn {
-                    channel,
-                    key,
-                    velocity: _,
-                } => 1000 - *key as i32 + *channel as i32 * 128,
-                // note-off events first
-                _ => 0,
-            }
-        }
-    });
-
-    for (event_time, event) in buffer.drain(..) {
-        engine.handle(event_time, event, sink);
+    if let Some(time) = buffer.first().map(|(time, _)| *time) {
+        engine.handle(time, buffer.drain(..).map(|(_, event)| event), sink);
     }
 }
 
