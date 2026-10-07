@@ -17,6 +17,19 @@ impl ErrorType for GuitarStringPwm {
     type Error = Infallible;
 }
 
+impl GuitarStringPwm {
+    pub fn current_duty_cycle(&self) -> u16 {
+        match self {
+            GuitarStringPwm::ChA(pwm) => pwm.current_duty_cycle(),
+            GuitarStringPwm::ChB(pwm) => pwm.current_duty_cycle(),
+            GuitarStringPwm::ChC(pwm) => pwm.current_duty_cycle(),
+            GuitarStringPwm::ChD(pwm) => pwm.current_duty_cycle(),
+            GuitarStringPwm::ChE(pwm) => pwm.current_duty_cycle(),
+            GuitarStringPwm::ChF(pwm) => pwm.current_duty_cycle(),
+        }
+    }
+}
+
 impl SetDutyCycle for GuitarStringPwm {
     fn max_duty_cycle(&self) -> u16 {
         match self {

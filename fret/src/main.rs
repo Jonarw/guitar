@@ -41,7 +41,7 @@ pub const MY_FRET: Fret = Fret::Fret12;
 #[cfg(feature = "fret13")]
 pub const MY_FRET: Fret = Fret::Fret13;
 
-type FretSignal = Signal<ThreadModeRawMutex, Message>;
+type FretSignal = Signal<ThreadModeRawMutex, FretMessage>;
 
 static FRET_SIGNALS: [FretSignal; 6] = [
     Signal::new(),
@@ -61,53 +61,42 @@ const RELEASE_BREAK_OFF_MS: u64 = 1;
 // operation when we are interrupted
 struct Interrupted {}
 
-async fn wait_interruptible(duration: Duration, signal: &'static FretSignal) -> Result<(), Interrupted> {
-    let increment = Duration::from_millis(1);
-
-    let end = Instant::now() + duration;
-    let mut now = Instant::now();
-    while now < end {
-        if signal.signaled() {
+fn check_interrupted(signal: &'static FretSignal, message: FretMessage) -> Result<(), Interrupted> {
+    // This does look like a race condition, but is not in fact one. We are running all tasks on the same executor,
+    // so we can't get interrupted by another task between these operations, so all effectively atomic
+    if let Some(new_message) = signal.try_take() {
+        // If a new message arrived which is the same we are already doing, we can just ignore it.
+        // If it is different, we re-apply the signal and interrupt the current message to process it.
+        if new_message != message {
+            signal.signal(new_message);
             return Err(Interrupted {});
         }
-
-        now = (now + increment).min(end);
-        Timer::at(end).await;
     }
 
     Ok(())
 }
 
-async fn wait_millis_interruptible(millis: u64, signal: &'static FretSignal) -> Result<(), Interrupted> {
-    wait_interruptible(Duration::from_millis(millis), signal).await
-}
-
 async fn pwm_ramp(
     pwm: &mut GuitarStringPwm,
-    start: u8,
     end: u8,
     duration: Duration,
     signal: &'static FretSignal,
+    message: FretMessage,
 ) -> Result<(), Interrupted> {
+    let start = (pwm.current_duty_cycle() as u32 * 100 / pwm.max_duty_cycle() as u32) as u8;
     let duration_per_percent = duration / end.abs_diff(start) as u32;
 
     let mut time = Instant::now();
     if start < end {
         for i in start..end {
-            if signal.signaled() {
-                return Err(Interrupted {});
-            }
-
+            check_interrupted(signal, message)?;
             pwm.set_duty_cycle_percent(i);
             time += duration_per_percent;
             Timer::at(time).await;
         }
     } else {
         for i in ((end + 1)..start).rev() {
-            if signal.signaled() {
-                return Err(Interrupted {});
-            }
-
+            check_interrupted(signal, message)?;
             pwm.set_duty_cycle_percent(i);
             time += duration_per_percent;
             Timer::at(time).await;
@@ -118,121 +107,153 @@ async fn pwm_ramp(
     Ok(())
 }
 
-async fn idle_to_down(pwm: &mut GuitarStringPwm, signal: &'static FretSignal) -> Result<(), Interrupted> {
+async fn idle_to_down(pwm: &mut GuitarStringPwm, string: GuitarString) {
+    // A, G, e have the long fingers and therefore somewhat more mass / friction -> need a bit more umpf
+    let max_force_time = match string {
+        GuitarString::E | GuitarString::D | GuitarString::B => 4,
+        GuitarString::A | GuitarString::G | GuitarString::e => 7,
+    };
+
+    let no_force_time = match string {
+        GuitarString::E | GuitarString::D | GuitarString::B => 9,
+        GuitarString::A | GuitarString::G | GuitarString::e => 5,
+    };
+
+    // keep this sequence atomic
     pwm.set_duty_cycle_percent(PWM_MAX_FORCE);
-    wait_millis_interruptible(5, signal).await?;
+    Timer::after_millis(max_force_time).await;
     pwm.set_duty_cycle_fully_off();
-    wait_millis_interruptible(9, signal).await?;
+    Timer::after_millis(no_force_time).await;
     pwm.set_duty_cycle_percent(PWM_DAMPEN_FORCE);
-    Ok(())
 }
 
-async fn fret_fast(
-    pwm: &mut GuitarStringPwm,
-    state: FretState,
-    signal: &'static FretSignal,
-) -> Result<(), Interrupted> {
+async fn fret_fast(pwm: &mut GuitarStringPwm, state: &mut FretState) {
     match state {
         FretState::Idle => {
             pwm.set_duty_cycle_percent(PWM_MAX_FORCE);
-            wait_millis_interruptible(5, signal).await?;
+            Timer::after_millis(5).await;
             pwm.set_duty_cycle_percent(PWM_HOLD_FORCE);
         }
         FretState::Fretting => {}
         FretState::Dampening => {
             pwm.set_duty_cycle_percent(PWM_MAX_FORCE);
-            wait_millis_interruptible(4, signal).await?;
+            Timer::after_millis(4).await;
             pwm.set_duty_cycle_percent(PWM_HOLD_FORCE);
         }
     }
 
-    Ok(())
+    *state = FretState::Fretting;
 }
 
 async fn fret_calibration(
     pwm: &mut GuitarStringPwm,
-    state: FretState,
+    state: &mut FretState,
     signal: &'static FretSignal,
+    string: GuitarString,
 ) -> Result<(), Interrupted> {
-    fret_quiet(pwm, state, signal).await?;
+    fret_quiet(pwm, state, signal, string).await?;
 
     const CALIBRATION_DURATION_MS: u64 = 1000;
     pwm.set_duty_cycle_percent(PWM_HOLD_FORCE - 10);
-    wait_millis_interruptible(CALIBRATION_DURATION_MS, signal).await?;
+    Timer::after_millis(CALIBRATION_DURATION_MS).await;
     pwm.set_duty_cycle_percent(PWM_HOLD_FORCE - 15);
-    wait_millis_interruptible(CALIBRATION_DURATION_MS, signal).await?;
+    *state = FretState::Dampening;
+    Timer::after_millis(CALIBRATION_DURATION_MS).await;
     pwm.set_duty_cycle_fully_off();
-
+    *state = FretState::Idle;
     Ok(())
 }
 
 async fn fret_quiet(
     pwm: &mut GuitarStringPwm,
-    state: FretState,
+    state: &mut FretState,
     signal: &'static FretSignal,
+    string: GuitarString,
 ) -> Result<(), Interrupted> {
     let ramp_duration = Duration::from_millis(100);
     match state {
         FretState::Idle => {
-            idle_to_down(pwm, signal).await?;
-            pwm_ramp(pwm, PWM_DAMPEN_FORCE, PWM_MAX_FORCE, ramp_duration, signal).await?;
+            idle_to_down(pwm, string).await;
+            *state = FretState::Dampening;
+
+            pwm_ramp(pwm, PWM_MAX_FORCE, ramp_duration, signal, FretMessage::FretQuiet).await?;
         }
         FretState::Fretting => return Ok(()),
         FretState::Dampening => {
-            pwm_ramp(pwm, PWM_DAMPEN_FORCE, PWM_MAX_FORCE, ramp_duration, signal).await?;
+            pwm_ramp(pwm, PWM_MAX_FORCE, ramp_duration, signal, FretMessage::FretQuiet).await?;
         }
     }
 
     pwm.set_duty_cycle_percent(PWM_HOLD_FORCE);
+    *state = FretState::Fretting;
     Ok(())
 }
 
-async fn dampen(pwm: &mut GuitarStringPwm, state: FretState, signal: &'static FretSignal) -> Result<(), Interrupted> {
+async fn dampen(pwm: &mut GuitarStringPwm, state: &mut FretState, string: GuitarString) {
     match state {
         FretState::Idle => {
-            idle_to_down(pwm, signal).await?;
-            pwm.set_duty_cycle_percent(PWM_DAMPEN_FORCE);
+            idle_to_down(pwm, string).await;
         }
         FretState::Fretting => {
             pwm.set_duty_cycle_fully_off();
-            wait_millis_interruptible(RELEASE_BREAK_OFF_MS, signal).await?;
+            Timer::after_millis(RELEASE_BREAK_OFF_MS).await;
             pwm.set_duty_cycle_percent(PWM_DAMPEN_FORCE);
         }
         FretState::Dampening => {}
     }
 
-    Ok(())
+    *state = FretState::Dampening;
 }
 
-async fn unfret(pwm: &mut GuitarStringPwm, state: FretState, signal: &'static FretSignal) -> Result<(), Interrupted> {
+async fn unfret(
+    pwm: &mut GuitarStringPwm,
+    state: &mut FretState,
+    signal: &'static FretSignal,
+) -> Result<(), Interrupted> {
     let ramp_duration = Duration::from_millis(500);
     match state {
         FretState::Idle => {}
         FretState::Fretting => {
             pwm.set_duty_cycle_fully_off();
-            wait_millis_interruptible(RELEASE_BREAK_OFF_MS, signal).await?;
-            pwm_ramp(pwm, PWM_DAMPEN_FORCE, 3, ramp_duration, signal).await?;
+            Timer::after_millis(RELEASE_BREAK_OFF_MS).await;
+            pwm.set_duty_cycle_percent(PWM_DAMPEN_FORCE);
+            *state = FretState::Dampening;
+
+            pwm_ramp(pwm, 3, ramp_duration, signal, FretMessage::Unfret).await?;
         }
-        FretState::Dampening => pwm_ramp(pwm, PWM_DAMPEN_FORCE, 3, ramp_duration, signal).await?,
+        FretState::Dampening => pwm_ramp(pwm, 3, ramp_duration, signal, FretMessage::Unfret).await?,
     }
 
     pwm.set_duty_cycle_fully_off();
+    *state = FretState::Idle;
     Ok(())
 }
 
-async fn unfret_fast(pwm: &mut GuitarStringPwm) {
+async fn unfret_fast(pwm: &mut GuitarStringPwm, state: &mut FretState) {
     pwm.set_duty_cycle_fully_off();
+    *state = FretState::Idle;
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 enum FretState {
     Idle,
     Fretting,
     Dampening,
 }
 
+#[derive(defmt::Format, Clone, Copy, PartialEq, Eq)]
+enum FretMessage {
+    FretFast,
+    FretQuiet,
+    Unfret,
+    UnfretFast,
+    Dampen,
+    FretCalibration,
+    Reset,
+}
+
 #[embassy_executor::task(pool_size = 6)]
-async fn string_task(mut pwm: GuitarStringPwm, signal: &'static FretSignal) {
+async fn string_task(mut pwm: GuitarStringPwm, signal: &'static FretSignal, string: GuitarString) {
     pwm.set_duty_cycle_fully_off();
 
     let mut state = FretState::Idle;
@@ -242,31 +263,24 @@ async fn string_task(mut pwm: GuitarStringPwm, signal: &'static FretSignal) {
         defmt::info!("Processing action {}", action);
 
         match action {
-            Message::FretFast(_, _) => {
-                let _ = fret_fast(&mut pwm, state, signal).await;
-                state = FretState::Fretting;
+            FretMessage::FretFast => {
+                fret_fast(&mut pwm, &mut state).await;
             }
-            Message::FretQuiet(_, _) => {
-                let _ = fret_quiet(&mut pwm, state, signal).await;
-                state = FretState::Fretting;
+            FretMessage::FretQuiet => {
+                let _ = fret_quiet(&mut pwm, &mut state, signal, string).await;
             }
-            Message::Unfret(_, _) => {
-                let _ = unfret(&mut pwm, state, signal).await;
-                state = FretState::Idle;
+            FretMessage::Unfret => {
+                let _ = unfret(&mut pwm, &mut state, signal).await;
             }
-            Message::UnfretFast(_, _) | Message::Reset => {
-                unfret_fast(&mut pwm).await;
-                state = FretState::Idle;
+            FretMessage::UnfretFast | FretMessage::Reset => {
+                unfret_fast(&mut pwm, &mut state).await;
             }
-            Message::Dampen(_, _) => {
-                let _ = dampen(&mut pwm, state, signal).await;
-                state = FretState::Dampening;
+            FretMessage::Dampen => {
+                dampen(&mut pwm, &mut state, string).await;
             }
-            Message::FretCalibration(_, _) => {
-                let _ = fret_calibration(&mut pwm, state, signal).await;
-                state = FretState::Idle;
+            FretMessage::FretCalibration => {
+                let _ = fret_calibration(&mut pwm, &mut state, signal, string).await;
             }
-            _ => {}
         }
     }
 }
@@ -303,6 +317,24 @@ fn get_fret_signal(fret: Fret, string: GuitarString) -> &'static FretSignal {
     }
 }
 
+fn get_string(idx: usize) -> GuitarString {
+    if MY_FRET == Fret::Fret13 {
+        // here we actually 'lie' about the string. This information is only used to decide whether the string has
+        // long or short fingers
+        GuitarString::E
+    } else {
+        match idx {
+            5 => GuitarString::E,
+            0 => GuitarString::A,
+            4 => GuitarString::D,
+            1 => GuitarString::G,
+            3 => GuitarString::B,
+            2 => GuitarString::e,
+            _ => panic!(),
+        }
+    }
+}
+
 fn is_message_relevant(message: &Message) -> bool {
     if *message == Message::Reset {
         return true;
@@ -330,17 +362,21 @@ async fn process_message(message: &Message, rs485: &mut Rs485) {
 
     match message {
         Message::FretPresence(_) => send_confirm_presence(rs485).await,
-        Message::FretFast(guitar_string, fret)
-        | Message::FretQuiet(guitar_string, fret)
-        | Message::Unfret(guitar_string, fret)
-        | Message::UnfretFast(guitar_string, fret)
-        | Message::Dampen(guitar_string, fret)
-        | Message::FretCalibration(guitar_string, fret) => {
-            get_fret_signal(*fret, *guitar_string).signal(*message);
+        Message::FretFast(guitar_string, fret) => get_fret_signal(*fret, *guitar_string).signal(FretMessage::FretFast),
+        Message::FretQuiet(guitar_string, fret) => {
+            get_fret_signal(*fret, *guitar_string).signal(FretMessage::FretQuiet)
+        }
+        Message::Unfret(guitar_string, fret) => get_fret_signal(*fret, *guitar_string).signal(FretMessage::Unfret),
+        Message::UnfretFast(guitar_string, fret) => {
+            get_fret_signal(*fret, *guitar_string).signal(FretMessage::UnfretFast)
+        }
+        Message::Dampen(guitar_string, fret) => get_fret_signal(*fret, *guitar_string).signal(FretMessage::Dampen),
+        Message::FretCalibration(guitar_string, fret) => {
+            get_fret_signal(*fret, *guitar_string).signal(FretMessage::FretCalibration)
         }
         Message::Reset => {
             for signal in FRET_SIGNALS.iter() {
-                signal.signal(*message);
+                signal.signal(FretMessage::Reset);
             }
         }
         _ => {}
@@ -369,32 +405,38 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(defmt::unwrap!(string_task(
         GuitarStringPwm::ChA(hw.ch_a),
-        &FRET_SIGNALS[0]
+        &FRET_SIGNALS[0],
+        get_string(0),
     )));
 
     spawner.spawn(defmt::unwrap!(string_task(
         GuitarStringPwm::ChB(hw.ch_b),
-        &FRET_SIGNALS[1]
+        &FRET_SIGNALS[1],
+        get_string(1),
     )));
 
     spawner.spawn(defmt::unwrap!(string_task(
         GuitarStringPwm::ChC(hw.ch_c),
-        &FRET_SIGNALS[2]
+        &FRET_SIGNALS[2],
+        get_string(2),
     )));
 
     spawner.spawn(defmt::unwrap!(string_task(
         GuitarStringPwm::ChD(hw.ch_d),
-        &FRET_SIGNALS[3]
+        &FRET_SIGNALS[3],
+        get_string(3),
     )));
 
     spawner.spawn(defmt::unwrap!(string_task(
         GuitarStringPwm::ChE(hw.ch_e),
-        &FRET_SIGNALS[4]
+        &FRET_SIGNALS[4],
+        get_string(4),
     )));
 
     spawner.spawn(defmt::unwrap!(string_task(
         GuitarStringPwm::ChF(hw.ch_f),
-        &FRET_SIGNALS[5]
+        &FRET_SIGNALS[5],
+        get_string(5),
     )));
 
     spawner.spawn(defmt::unwrap!(rs485_task(hw.rs485)));
