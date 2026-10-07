@@ -58,6 +58,7 @@ pub const META_EXPRESSION_DAMP: u8 = META_EXPRESSION_SOFT + 3;
 
 /// Lead time for `FretQuiet` before a pluck.
 const FRET_QUIET_PREP_MS: i64 = 50;
+const DAMPEN_PREP_MS: i64 = 20;
 /// Lead time for `FretFast` before a finger slam.
 const FRET_FAST_PREP_MS: i64 = 20;
 /// Lead time for `PluckVolume` (servo settling). If the previous pluck was
@@ -480,6 +481,7 @@ impl GuitarEngine {
                     Message::UnfretFast(string, fret),
                 );
                 state.position = FretPosition::Idle;
+                state.release_time = None;
             }
         }
 
@@ -538,7 +540,7 @@ impl GuitarEngine {
     }
 
     fn schedule_pre_dampen(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
-        self.schedule_dampen(string, fret, shifted(t, -FRET_QUIET_PREP_MS), sink);
+        self.schedule_dampen(string, fret, shifted(t, -DAMPEN_PREP_MS), sink);
     }
 
     fn schedule_dampen(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
@@ -549,6 +551,7 @@ impl GuitarEngine {
         if fret_state.position != FretPosition::Damping {
             sink.schedule(t, Message::Dampen(string, fret));
             fret_state.position = FretPosition::Damping;
+            fret_state.release_time = None;
         }
     }
 
@@ -558,6 +561,7 @@ impl GuitarEngine {
         if fret_state.position != FretPosition::Holding {
             sink.schedule(shifted(t, -FRET_QUIET_PREP_MS), Message::FretQuiet(string, fret));
             fret_state.position = FretPosition::Holding;
+            fret_state.release_time = None;
         }
     }
 
@@ -584,6 +588,7 @@ impl GuitarEngine {
 
         sink.schedule(shifted(t, -FRET_FAST_PREP_MS), Message::FretFast(string, fret));
         fret_state.position = FretPosition::Holding;
+        fret_state.release_time = None;
     }
 
     /// Hard pluck while only dampening the note position: percussive sound.
@@ -708,9 +713,16 @@ impl GuitarEngine {
     /// Schedules the quiet `Unfret` of a dampened fret after the settle time.
     fn schedule_unfret(&mut self, string: GuitarString, fret: Fret, t: Instant, sink: &mut dyn CommandSink) {
         let st = &mut self.states.get_state_mut(string);
-        sink.schedule(t, Message::Unfret(string, fret));
         let fs = st.fret_states.get_state_mut(fret);
-        fs.release_time = Some(shifted(t, UNFRET_QUIET_DURATION_MS));
+
+        let release_time = shifted(t, UNFRET_QUIET_DURATION_MS);
+
+        if fs.position == FretPosition::Idle || fs.release_time.is_some_and(|rt| rt <= release_time) {
+            return;
+        }
+
+        sink.schedule(t, Message::Unfret(string, fret));
+        fs.release_time = Some(release_time);
     }
 }
 
