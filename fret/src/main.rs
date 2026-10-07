@@ -109,14 +109,14 @@ async fn pwm_ramp(
 
 async fn idle_to_down(pwm: &mut GuitarStringPwm, string: GuitarString) {
     // A, G, e have the long fingers and therefore somewhat more mass / friction -> need a bit more umpf
-    let max_force_time = match string {
-        GuitarString::E | GuitarString::D | GuitarString::B => 4,
-        GuitarString::A | GuitarString::G | GuitarString::e => 7,
+    let max_force_time = match has_long_fingers(string) {
+        false => 4,
+        true => 7,
     };
 
-    let no_force_time = match string {
-        GuitarString::E | GuitarString::D | GuitarString::B => 9,
-        GuitarString::A | GuitarString::G | GuitarString::e => 5,
+    let no_force_time = match has_long_fingers(string) {
+        false => 9,
+        true => 5,
     };
 
     // keep this sequence atomic
@@ -319,9 +319,7 @@ fn get_fret_signal(fret: Fret, string: GuitarString) -> &'static FretSignal {
 
 fn get_string(idx: usize) -> GuitarString {
     if MY_FRET == Fret::Fret13 {
-        // here we actually 'lie' about the string. This information is only used to decide whether the string has
-        // long or short fingers
-        GuitarString::E
+        GuitarString::e
     } else {
         match idx {
             5 => GuitarString::E,
@@ -331,6 +329,17 @@ fn get_string(idx: usize) -> GuitarString {
             3 => GuitarString::B,
             2 => GuitarString::e,
             _ => panic!(),
+        }
+    }
+}
+
+fn has_long_fingers(string: GuitarString) -> bool {
+    if MY_FRET == Fret::Fret13 {
+        false
+    } else {
+        match string {
+            GuitarString::E | GuitarString::D | GuitarString::B => false,
+            GuitarString::A | GuitarString::G | GuitarString::e => true,
         }
     }
 }
