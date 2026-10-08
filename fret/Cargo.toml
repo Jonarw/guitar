@@ -2,6 +2,7 @@
 edition = "2024"
 name = "guitar-fret"
 version = "0.1.0"
+license = "GPL-3.0-only"
 authors = ["Jonathan Arweck <Jonarw@users.noreply.github.com>"]
 resolver = "2"
 
